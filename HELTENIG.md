@@ -1,7 +1,7 @@
 # Helt Enig Protocol — Digital Contract Signing on Bitcoin SV
 
-**Version:** 0.1.0
-**Date:** 2026-03-15
+**Version:** 0.2.0
+**Date:** 2026-03-18
 **License (specification):** MIT
 **License (implementations):** Open BSV License
 
@@ -137,11 +137,15 @@ Same HKDF-SHA256 algorithm as Beviset Protocol (see Beviset Protocol section 4),
 ### 5.1 Algorithm
 
 ```python
-def derive_bitcoin_key(identity_input: str, domain: str) -> bytes:
+def derive_bitcoin_key(identity_input: str, domain: str, key_id: str = None) -> bytes:
     """
     HKDF-SHA256 (RFC 5869):
       Extract: PRK = HMAC-SHA256(domain, identity_input)
-      Expand:  OKM = HMAC-SHA256(PRK, "bitcoin-key-derivation" || 0x01)
+      Expand:  OKM = HMAC-SHA256(PRK, info)
+
+    Info string:
+      Without key_id: "bitcoin-key-derivation" || 0x01          (base key)
+      With key_id:    "bitcoin-key-derivation:" || key_id || 0x01 (child key)
 
     Returns 32 bytes — a valid secp256k1 private key.
     """
@@ -151,14 +155,21 @@ def derive_bitcoin_key(identity_input: str, domain: str) -> bytes:
         hashlib.sha256,
     ).digest()
 
+    if key_id:
+        info = f"bitcoin-key-derivation:{key_id}".encode("utf-8") + b"\x01"
+    else:
+        info = b"bitcoin-key-derivation\x01"
+
     okm = hmac.new(
         prk,
-        b"bitcoin-key-derivation\x01",
+        info,
         hashlib.sha256,
     ).digest()
 
     return okm
 ```
+
+For child key derivation details, see Beviset Protocol section 4.1.1. The same keyID mechanism applies — use the contract hash as `key_id` so each contract signing produces unique addresses for both signers.
 
 ### 5.2 Domain separators
 
@@ -268,9 +279,9 @@ Step 2 — Contract hash:
              + "\n" + template_id + "\n" + timestamp
   contract_hash = SHA-256(preimage)
 
-Step 3 — Derive addresses:
-  address_a = P2PKH(derive_bitcoin_key(canonical_a, "heltenig-v1-keygen-emailphone"))
-  address_b = P2PKH(derive_bitcoin_key(canonical_b, "heltenig-v1-keygen-emailphone"))
+Step 3 — Derive addresses (using contract_hash as keyID):
+  address_a = P2PKH(derive_bitcoin_key(canonical_a, "heltenig-v1-keygen-emailphone", contract_hash))
+  address_b = P2PKH(derive_bitcoin_key(canonical_b, "heltenig-v1-keygen-emailphone", contract_hash))
 
 Step 4 — Check blockchain:
   Look up inscriptions at address_a and address_b
@@ -326,7 +337,11 @@ Templates are a service-layer concern. The protocol itself only requires: contra
 | Service revokes contract | Impossible — inscriptions are UTXOs held by signers |
 | One party denies signing | Blockchain proves inscription at their derived address |
 
-### 10.2 Privacy (GDPR)
+### 10.2 Entropy and deliberate tradeoffs
+
+Same considerations as Beviset Protocol section 7.2. PID has limited entropy (~33 bits); address derivability from identity is by design. The keyID mechanism (section 5.1) prevents cross-contract linkability.
+
+### 10.3 Privacy (GDPR)
 
 - Personal IDs are never stored on-chain — only peppered HMAC hashes
 - Contract text is never on-chain — only SHA-256 hash
@@ -334,7 +349,7 @@ Templates are a service-layer concern. The protocol itself only requires: contra
 - Signers can request deletion of server-side data (GDPR art. 17)
 - On-chain hashes are retained (not personal data — irreversible)
 
-### 10.3 Legal basis
+### 10.4 Legal basis
 
 Electronic signatures via email + phone verification meet the requirements for Advanced Electronic Signatures under eIDAS (EU 910/2014):
 - Uniquely linked to signatory
@@ -355,7 +370,8 @@ All constants are public. Security does not depend on any constant being secret.
 | Identity pepper (email+phone) | `"heltenig-protocol-identity-pepper-v1-datamynt"` | Identity hashing |
 | Key domain (BankID) | `"heltenig-v1-keygen"` | HKDF-Extract |
 | Key domain (email+phone) | `"heltenig-v1-keygen-emailphone"` | HKDF-Extract |
-| HKDF info | `"bitcoin-key-derivation" \|\| 0x01` | HKDF-Expand |
+| HKDF info (base) | `"bitcoin-key-derivation" \|\| 0x01` | HKDF-Expand (no keyID) |
+| HKDF info (child) | `"bitcoin-key-derivation:" \|\| key_id \|\| 0x01` | HKDF-Expand (with keyID) |
 | Inscription content-type | `application/json; charset=utf-8` | 1SatOrdinal metadata |
 
 ---

@@ -1,7 +1,7 @@
 # Beviset Protocol — Digital Ownership Certificates on Bitcoin SV
 
-**Version:** 0.3.0
-**Date:** 2026-03-15
+**Version:** 0.4.0
+**Date:** 2026-03-18
 **License (specification):** MIT
 **License (implementations):** Open BSV License
 
@@ -149,13 +149,20 @@ import hmac
 # Beviset uses: "beviset-v1-keygen"
 # Other services define their own domain separators.
 
-def derive_bitcoin_key(identity_input: str, domain: str) -> bytes:
+def derive_bitcoin_key(identity_input: str, domain: str, key_id: str = None) -> bytes:
     """
     Deterministic Bitcoin key from identity.
 
     Uses HKDF-SHA256 (RFC 5869):
       Extract: PRK = HMAC-SHA256(domain, identity_input)
-      Expand:  OKM = HMAC-SHA256(PRK, "bitcoin-key-derivation" || 0x01)
+      Expand:  OKM = HMAC-SHA256(PRK, info)
+
+    Info string:
+      Without key_id: "bitcoin-key-derivation" || 0x01          (base key)
+      With key_id:    "bitcoin-key-derivation:" || key_id || 0x01 (child key)
+
+    The key_id parameter enables unique addresses per registration/transaction
+    while maintaining backwards compatibility (omitting key_id = same key as before).
 
     Returns 32 bytes — a valid secp256k1 private key.
     """
@@ -167,14 +174,33 @@ def derive_bitcoin_key(identity_input: str, domain: str) -> bytes:
     ).digest()
 
     # HKDF-Expand (single block = 32 bytes = 256 bits)
+    if key_id:
+        info = f"bitcoin-key-derivation:{key_id}".encode("utf-8") + b"\x01"
+    else:
+        info = b"bitcoin-key-derivation\x01"
+
     okm = hmac.new(
         prk,
-        b"bitcoin-key-derivation\x01",
+        info,
         hashlib.sha256,
     ).digest()
 
     return okm  # 32 bytes = valid secp256k1 private key
 ```
+
+### 4.1.1 Child key derivation (keyID)
+
+When `key_id` is provided, it is appended to the HKDF info string after a `:` separator. This produces a unique Bitcoin address for each distinct `key_id`, preventing on-chain linkability between registrations by the same identity.
+
+**Recommended keyID:** Use the proof hash (section 3.3) as the `key_id`. Since the proof hash is already inscribed on-chain, a verifier can:
+
+1. Read the inscription → extract the proof hash
+2. Recompute the expected address: `derive_bitcoin_key(identity, domain, proof_hash)`
+3. Confirm the inscription lives at that address
+
+No server or database lookup is needed — the keyID is self-contained in the inscription.
+
+**Backwards compatibility:** Omitting `key_id` produces the same key as before. Existing inscriptions at base addresses remain valid.
 
 ### 4.2 Address derivation
 
@@ -301,7 +327,7 @@ Claimed owner provides: identity + item serial + category + registration time
                                ↓
 Verifier computes:    identity_hash = HMAC-SHA256(pepper, identity)
                       proof_hash = SHA-256(preimage)
-                      address = P2PKH(derive_bitcoin_key(identity, domain))
+                      address = P2PKH(derive_bitcoin_key(identity, domain, proof_hash))
                                ↓
 Verifier checks:      proof_hash matches inscription on-chain?  ✓
                       address matches current UTXO holder?      ✓
@@ -333,7 +359,17 @@ Verifier checks:      proof_hash matches inscription on-chain?  ✓
 | Service compromised | Existing proofs are NOT invalidated — they live on-chain |
 | Key derivation server down | Algorithm is published — anyone can run it |
 
-### 7.2 Privacy (GDPR)
+### 7.2 Entropy and deliberate tradeoffs
+
+Norwegian personal IDs (PID) have ~33 bits of entropy (~5 million valid values). The HMAC pepper defends against precomputed rainbow tables, but a motivated party with knowledge of the pepper can brute-force all valid PIDs to derive all possible addresses.
+
+**This is by design.** The verification model requires that anyone with a person's identity can derive their address and verify their proofs. The address being derivable from identity is the core feature, not a vulnerability.
+
+The keyID mechanism (section 4.1.1) mitigates linkability: even after deriving an address, an attacker cannot discover other registrations by the same identity without knowing their proof hashes.
+
+For applications requiring stronger input entropy, use email+phone derivation (higher entropy) or layer additional secrets outside this protocol.
+
+### 7.3 Privacy (GDPR)
 
 - Personal IDs (PID) are NEVER stored — only peppered HMAC hashes
 - On-chain inscriptions contain only hash + category — no personal data
@@ -354,7 +390,8 @@ All constants are public. This is by design — the security model does not depe
 | Identity pepper (email+phone) | `"beviset-protocol-identity-pepper-v1-datamynt"` | Identity hashing (email+phone) |
 | Key domain (BankID) | `"beviset-v1-keygen"` | HKDF-Extract |
 | Key domain (email+phone) | `"beviset-v1-keygen-emailphone"` | HKDF-Extract |
-| HKDF info | `"bitcoin-key-derivation" \|\| 0x01` | HKDF-Expand |
+| HKDF info (base) | `"bitcoin-key-derivation" \|\| 0x01` | HKDF-Expand (no keyID) |
+| HKDF info (child) | `"bitcoin-key-derivation:" \|\| key_id \|\| 0x01` | HKDF-Expand (with keyID) |
 | Inscription content-type | `application/json` | 1SatOrdinal metadata |
 
 ---
