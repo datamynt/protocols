@@ -1,6 +1,6 @@
 # Beviset Protocol — Digital Ownership Certificates on Bitcoin SV
 
-**Version:** 0.4.0
+**Version:** 0.5.0
 **Date:** 2026-03-18
 **License (specification):** MIT
 **License (implementations):** Open BSV License
@@ -9,11 +9,11 @@
 
 ## 1. Summary
 
-Beviset Protocol is an open standard for registering, verifying, and transferring digital ownership certificates anchored to the Bitcoin SV blockchain.
+Beviset Protocol is an open standard for registering and verifying provenance certificates for physical goods, anchored to the Bitcoin SV blockchain.
 
-The core property: **anyone can verify ownership independently**, without relying on any server or service provider. All algorithms and constants are published. The blockchain is public. Verification requires only math.
+The protocol establishes **notoriety** (cryptographic proof of what was registered, by whom, and when) — not legal title (rettsvern). For physical goods under Norwegian law, legal ownership protection requires physical delivery (tradisjon). Beviset provides a complementary digital provenance record.
 
-**Core principle:** The proof is a satoshi. The owner holds the satoshi. The UTXO chain IS the ownership history.
+**Core principle:** The proof is a satoshi. The inscription commits the registration hash. The UTXO chain records transfer history.
 
 ---
 
@@ -359,23 +359,50 @@ Verifier checks:      proof_hash matches inscription on-chain?  ✓
 | Service compromised | Existing proofs are NOT invalidated — they live on-chain |
 | Key derivation server down | Algorithm is published — anyone can run it |
 
-### 7.2 Entropy and deliberate tradeoffs
+### 7.2 Entropy, key derivation, and deliberate tradeoffs
 
-Norwegian personal IDs (PID) have ~33 bits of entropy (~5 million valid values). The HMAC pepper defends against precomputed rainbow tables, but a motivated party with knowledge of the pepper can brute-force all valid PIDs to derive all possible addresses.
+**Important:** The key derivation algorithm produces a *private key* from identity inputs. For PID-based derivation (~33 bits of entropy, ~5 million valid values), an attacker can brute-force all valid PIDs in seconds to:
 
-**This is by design.** The verification model requires that anyone with a person's identity can derive their address and verify their proofs. The address being derivable from identity is the core feature, not a vulnerability.
+1. **Derive the private key** for any inscription (given the on-chain proof_hash as keyID)
+2. **Transfer the 1SatOrdinal** to a different address (unauthorized ownership transfer)
+3. **Identify the owner's PID** by matching derived addresses against on-chain data
 
-The keyID mechanism (section 4.1.1) mitigates linkability: even after deriving an address, an attacker cannot discover other registrations by the same identity without knowing their proof hashes.
+**This is a known and accepted tradeoff for this protocol's use case.** The rationale:
 
-For applications requiring stronger input entropy, use email+phone derivation (higher entropy) or layer additional secrets outside this protocol.
+- The 1SatOrdinal has no monetary value (~0.00001 USD). Economic incentive for theft is zero.
+- The original registration and full transfer history remain permanently visible on-chain. Unauthorized transfers are forensically detectable.
+- The protocol's core value is *proof of existence and provenance*, not custodial asset security.
+- Verification without any server requires that addresses are derivable from identity — this inherently means the private key is also derivable.
+
+**For email+phone derivation**, entropy is significantly higher (email address + phone number combination), making brute-force impractical without prior knowledge of both inputs.
+
+**The keyID mechanism** (section 4.1.1) mitigates *linkability*: even after deriving one address, an attacker cannot discover other registrations by the same identity without knowing their proof hashes.
+
+**This protocol is NOT suitable for:**
+- Custody of high-value digital assets
+- Scenarios requiring "sole control" over signing keys (eIDAS Advanced/Qualified signatures)
+- Applications where unauthorized UTXO transfer has material consequences
+
+For such use cases, use independently generated keypairs with proper key management (hardware wallets, WebAuthn/Passkeys) and an identity attestation model instead of deterministic derivation.
 
 ### 7.3 Privacy (GDPR)
 
-- Personal IDs (PID) are NEVER stored — only peppered HMAC hashes
-- On-chain inscriptions contain only hash + category — no personal data
-- Public verification reveals existence and blockchain status, not item details
-- Owner can request deletion of server-side data (GDPR art. 17)
-- On-chain hash is retained (not personal data — irreversible)
+**Important regulatory note:** Under EDPB and CNIL guidance, HMAC-hashed identity data constitutes **pseudonymization, not anonymization**. Pseudonymized data remains personal data under GDPR. This has specific implications for this protocol:
+
+- **On-chain data is immutable.** Identity hashes written to BSV cannot be deleted, which conflicts with GDPR Article 17 (right to erasure).
+- **Mitigation:** The on-chain proof_hash does not contain identity data directly. The identity_hash appears only in the inscription metadata. Future versions should move identity_hash off-chain entirely, storing only the proof_hash on-chain.
+- **Crypto-shredding:** If the HMAC pepper is rotated or destroyed, existing on-chain hashes become computationally irreversible (effective erasure). However, this is only effective if the pepper has never been compromised and input entropy is sufficient.
+
+Current privacy properties:
+- Personal IDs (PID) are NEVER stored in cleartext — only peppered HMAC hashes
+- On-chain inscriptions contain proof_hash + category — no raw personal data
+- Owner can request deletion of all server-side data (GDPR art. 17)
+- On-chain hashes are retained as pseudonymized data
+
+**Planned improvements (eIDAS 2.0 / EUDI Wallet integration):**
+- User-generated keypairs on-device (eliminates identity-derived keys)
+- No identity data on-chain whatsoever
+- Verification via wallet-issued attestations instead of deterministic derivation
 
 ---
 

@@ -1,6 +1,6 @@
 # Helt Enig Protocol — Digital Contract Signing on Bitcoin SV
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 **Date:** 2026-03-18
 **License (specification):** MIT
 **License (implementations):** Open BSV License
@@ -343,19 +343,27 @@ Same considerations as Beviset Protocol section 7.2. PID has limited entropy (~3
 
 ### 10.3 Privacy (GDPR)
 
-- Personal IDs are never stored on-chain — only peppered HMAC hashes
+**Important regulatory note:** HMAC-hashed identity data constitutes pseudonymization, not anonymization under EDPB/CNIL guidance. Pseudonymized data remains personal data under GDPR. See Beviset Protocol section 7.3 for full analysis.
+
+Current privacy properties:
+- Personal IDs are never stored on-chain in cleartext — only peppered HMAC hashes
 - Contract text is never on-chain — only SHA-256 hash
 - Inscriptions reveal existence and signing time, not content
-- Signers can request deletion of server-side data (GDPR art. 17)
-- On-chain hashes are retained (not personal data — irreversible)
+- Signers can request deletion of all server-side data (GDPR art. 17)
+- On-chain hashes are retained as pseudonymized data
+
+**Planned:** Migration to EUDI Wallet-based signing (eIDAS 2.0) will eliminate identity-derived keys and remove all identity data from chain.
 
 ### 10.4 Legal basis
 
-Electronic signatures via email + phone verification meet the requirements for Advanced Electronic Signatures under eIDAS (EU 910/2014):
-- Uniquely linked to signatory
-- Capable of identifying signatory
-- Under sole control (requires access to both email and phone)
-- Linked to data so changes are detectable (blockchain hash)
+Electronic signatures via email + phone verification constitute Simple Electronic Signatures under eIDAS (EU 910/2014). They do NOT meet the "sole control" requirement for Advanced Electronic Signatures, as the signing key is deterministically derived from identity inputs rather than held exclusively by the signatory.
+
+The signatures are nonetheless legally admissible as evidence of agreement in Norway (avtaleloven § 1) and the EU. The blockchain provides:
+- Timestamped proof that an agreement was recorded
+- Tamper-evident hash of the contract text
+- Identity binding via verified email + phone
+
+For use cases requiring Advanced or Qualified Electronic Signatures (e.g., real estate, regulated financial contracts), use BankID's native signing service instead.
 
 ---
 
