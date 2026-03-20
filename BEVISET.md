@@ -1,7 +1,7 @@
 # Beviset Protocol — Digital Ownership Certificates on Bitcoin SV
 
-**Version:** 0.5.0
-**Date:** 2026-03-18
+**Version:** 0.7.0
+**Date:** 2026-03-19
 **License (specification):** MIT
 **License (implementations):** Open BSV License
 
@@ -32,7 +32,7 @@ The protocol establishes **notoriety** (cryptographic proof of what was register
                         │
 ┌───────────────────────▼──────────────────────────────┐
 │  Key derivation (WAB algorithm — published, open)    │
-│  Identity → deterministic Bitcoin key → address      │
+│  Identity + salt → deterministic Bitcoin key         │
 └───────────────────────┬──────────────────────────────┘
                         │
 ┌───────────────────────▼──────────────────────────────┐
@@ -137,39 +137,47 @@ Step 3 — Proof hash:
 
 ## 4. Key Derivation
 
-This is the critical piece that makes verification trustless. The same identity input deterministically produces the same Bitcoin address — no secrets, no server dependency.
+Key derivation maps an identity to a deterministic Bitcoin address. A server-held 256-bit random salt (the user's "presentation key") ensures that knowing someone's identity alone is NOT sufficient to derive their private key.
 
-### 4.1 Algorithm: HKDF-SHA256
+### 4.1 Algorithm: Salted HKDF-SHA256
 
 ```python
 import hashlib
 import hmac
 
-# Domain separator — different per application to keep key spaces independent.
-# Beviset uses: "beviset-v1-keygen"
-# Other services define their own domain separators.
+# Domain separator — different per application and identity type.
+# See section 4.3 for the full list of domain separators.
 
-def derive_bitcoin_key(identity_input: str, domain: str, key_id: str = None) -> bytes:
+def derive_bitcoin_key(
+    identity_input: str,
+    domain: str,
+    salt: str,             # 256-bit random hex (user's presentation key)
+    key_id: str = None,
+) -> bytes:
     """
-    Deterministic Bitcoin key from identity.
+    Deterministic Bitcoin key from identity + salt.
 
     Uses HKDF-SHA256 (RFC 5869):
-      Extract: PRK = HMAC-SHA256(domain, identity_input)
+      IKM     = identity_input || salt
+      Extract: PRK = HMAC-SHA256(domain, IKM)
       Expand:  OKM = HMAC-SHA256(PRK, info)
+
+    The salt is a 256-bit random value generated per user on first key
+    derivation and stored server-side. It prevents brute-force: even for
+    BankID PIDs (~5M valid values), an attacker cannot derive keys without
+    the salt.
 
     Info string:
       Without key_id: "bitcoin-key-derivation" || 0x01          (base key)
       With key_id:    "bitcoin-key-derivation:" || key_id || 0x01 (child key)
 
-    The key_id parameter enables unique addresses per registration/transaction
-    while maintaining backwards compatibility (omitting key_id = same key as before).
-
     Returns 32 bytes — a valid secp256k1 private key.
     """
-    # HKDF-Extract
+    # HKDF-Extract with salted IKM
+    ikm = identity_input + salt
     prk = hmac.new(
         domain.encode("utf-8"),
-        identity_input.encode("utf-8"),
+        ikm.encode("utf-8"),
         hashlib.sha256,
     ).digest()
 
@@ -195,7 +203,7 @@ When `key_id` is provided, it is appended to the HKDF info string after a `:` se
 **Recommended keyID:** Use the proof hash (section 3.3) as the `key_id`. Since the proof hash is already inscribed on-chain, a verifier can:
 
 1. Read the inscription → extract the proof hash
-2. Recompute the expected address: `derive_bitcoin_key(identity, domain, proof_hash)`
+2. Recompute the expected address: `derive_bitcoin_key(identity, domain, salt, key_id=proof_hash)`
 3. Confirm the inscription lives at that address
 
 No server or database lookup is needed — the keyID is self-contained in the inscription.
@@ -205,7 +213,7 @@ No server or database lookup is needed — the keyID is self-contained in the in
 ### 4.2 Address derivation
 
 ```
-private_key = derive_bitcoin_key(identity_input, domain)
+private_key = derive_bitcoin_key(identity_input, domain, salt)
 public_key  = secp256k1_multiply(G, private_key)  # compressed, 33 bytes
 address     = P2PKH(public_key)                    # standard Bitcoin address
 ```
@@ -216,27 +224,29 @@ Each application uses a unique domain separator so the same identity produces di
 
 | Application | Identity type | Domain separator |
 |-------------|--------------|------------------|
-| Beviset (BankID) | PID | `"beviset-v1-keygen"` |
+| Beviset (BankID) | PID | `"wab-keygen-beviset-v1"` |
 | Beviset (email+phone) | canonical string | `"beviset-v1-keygen-emailphone"` |
-| Helt Enig (BankID) | PID | `"heltenig-v1-keygen"` |
+| Beviset (email) | canonical email | `"beviset-v1-keygen-email"` |
+| Helt Enig (BankID) | PID | `"wab-keygen-heltenig-v1"` |
 | Helt Enig (email+phone) | canonical string | `"heltenig-v1-keygen-emailphone"` |
+| Mer Data (email) | canonical email | `"merdata-v1-keygen-email"` |
 
 ### 4.4 Why this matters
 
-The key derivation algorithm is **published and deterministic**. This means:
+The key derivation algorithm is **published and deterministic**, but requires a per-user salt that is stored server-side. This gives two important properties:
 
-1. Given someone's identity (BankID PID or email+phone), anyone can derive their Bitcoin address.
-2. You can look up that address on the blockchain to find their inscriptions.
-3. You can verify the inscription hash matches the claimed data.
-4. **No server, no database, no trust required.** Only: identity + blockchain + SHA-256 + this document.
+1. **Privacy:** Knowing someone's identity alone is NOT sufficient to derive their Bitcoin address or private key. The 256-bit salt makes brute-force computationally infeasible.
+2. **Verifiability:** The key derivation service provides a public `/api/verify-address` endpoint that confirms whether an address belongs to a given identity — without exposing the salt or private keys.
 
-This is what makes the system survive its creator. If every server shuts down tomorrow, the proofs still live on-chain and can be verified by anyone with this specification.
+**Survivability:** The salt is backed up per user. For contract platforms (e.g., Helt Enig), the salt can be embedded in signed PDF documents, making the PDF itself a self-contained backup. For ownership registrations (e.g., Beviset), the salt is held by the key derivation service and can be exported by the user.
 
 ### 4.5 Security properties
 
 | Concern | Mitigation |
 |---------|-----------|
-| Key derivation server compromised | Algorithm is published — anyone can run it |
+| Brute-force PID → key | 256-bit salt makes this computationally infeasible (~2^256 guesses) |
+| Key derivation server compromised | Algorithm is published — anyone can run it with their salt backup |
+| Salt leaked | Salt alone is useless without identity; identity alone is useless without salt |
 | Identity changes | Rare; triggers key rotation + re-signing |
 | Keys derived on-demand | Never stored — derived when needed, then discarded |
 | Same identity, different services | Domain separators ensure independent key spaces |
@@ -312,41 +322,154 @@ Verification:
 
 ---
 
-## 6. Verification Without Any Server
+## 6. Transaction Verification (BEEF / SPV)
 
-Anyone with internet access can verify an ownership proof:
+### 6.1 BEEF format (BRC-62)
 
-1. **Obtain the inscription TXID** (from PDF certificate, database dump, or user claim)
+Implementations SHOULD store all anchoring transactions in **BEEF** (Background Evaluation Extended Format, BRC-62). BEEF bundles the raw transaction data with Merkle proofs (BUMPs, BRC-74) into a single self-verifying package.
+
+```
+BEEF structure:
+  Version: 0100BEEF (little-endian)
+  BUMPs:   [count] [merkle_path_1] [merkle_path_2] ...
+  TXs:     [count] [raw_tx_1 + bump_index] [raw_tx_2 + bump_index] ...
+```
+
+**Why BEEF matters for ownership proofs:**
+- A BEEF-wrapped inscription is **independently verifiable** — no trusted third party needed
+- The Merkle path proves the TX is included in a specific block at a specific height
+- Combined with block headers (available from any BSV node), this provides full SPV verification
+- BEEF can be embedded in PDF certificates, stored in databases, or shared peer-to-peer
+
+### 6.2 SPV verification
+
+Simplified Payment Verification (SPV) confirms that a transaction is included in a block without downloading the entire blockchain. For ownership proofs, SPV provides:
+
+1. **Merkle path** — proves TX inclusion in a specific block
+2. **Block height** — establishes when the proof was created
+3. **Confirmation depth** — `current_height - tx_height` = proof strength
+
+```
+SPV verification flow:
+  1. Extract TX and Merkle path from BEEF
+  2. Compute Merkle root from TX hash + path
+  3. Verify Merkle root matches the block header at the claimed height
+  4. Check confirmation depth (deeper = stronger)
+
+Confirmation depth guidelines:
+  depth >= 1      Transaction is mined (basic confidence)
+  depth >= 6      Standard Bitcoin confirmation threshold
+  depth >= 100    Strong proof — reorganization extremely unlikely
+  depth >= 1000   Historical proof — practically immutable
+```
+
+Implementations SHOULD use a chain tracker (e.g., WhatsOnChain, Chaintracks) to verify Merkle roots against block headers. For highest assurance, implementations MAY verify against their own BSV node.
+
+### 6.3 ARC callbacks for Merkle path delivery
+
+The ARC transaction processor (BRC-22) provides asynchronous callbacks when a transaction is mined, delivering the Merkle path needed for BEEF completion.
+
+```
+Broadcasting flow:
+  1. Service broadcasts TX to ARC with callback URL + token
+  2. ARC returns initial status (QUEUED → SEEN_ON_NETWORK)
+  3. When TX is mined, ARC POST callback with {txid, merklePath, txStatus}
+  4. Service merges Merkle path into stored BEEF → proof is now SPV-verifiable
+
+ARC callback payload:
+  {
+    "txid": "<transaction_id>",
+    "txStatus": "MINED",
+    "merklePath": "<BRC-74 hex-encoded Merkle path>"
+  }
+```
+
+Implementations SHOULD:
+- Register a callback URL when broadcasting via ARC
+- Store the initial BEEF without BUMPs immediately after broadcast
+- Merge the Merkle path into BEEF when the callback arrives
+- Mark the proof as SPV-verified only after successful Merkle path verification
+
+### 6.4 Broadcaster failover
+
+Implementations SHOULD use sequential failover across multiple broadcasters to maximize reliability:
+
+```
+Recommended broadcast order:
+  1. ARC (TAAL)           — primary, with callbacks
+  2. ARC (GorillaPool)    — secondary ARC
+  3. WhatsOnChain         — fallback (no callbacks)
+  4. Direct node broadcast — last resort
+```
+
+If the primary broadcaster fails, the next is tried automatically. Only the first successful broadcast registers callbacks — subsequent attempts are fire-and-forget.
+
+---
+
+## 7. Identity Verification
+
+### 7.1 Online verification (primary)
+
+The key derivation service provides a public endpoint for address verification:
+
+```
+POST /api/verify-address
+{
+  "identity_type": "bankid" | "emailphone" | "email",
+  "pid": "12345678901",          // for bankid
+  "email": "user@example.com",   // for emailphone/email
+  "phone": "+4712345678",        // for emailphone
+  "purpose": "beviset-v1",
+  "address": "1Abc...",
+  "keyID": "<proof_hash>"        // optional
+}
+
+Response: { "verified": true }
+```
+
+This endpoint re-derives the address server-side (using the stored salt) and compares — without exposing the salt or private key.
+
+### 7.2 Full verification flow
+
+1. **Obtain the inscription TXID** (from PDF certificate, database, or user claim)
 2. **Follow the UTXO chain** to the current holder's address
-3. **Derive the expected address** from the claimed owner's identity using the published key derivation algorithm (section 4)
-4. **Check that the addresses match** — holder's address = derived address
-5. **Verify the proof hash** — recompute from claimed data using section 3, check it matches the inscription
+3. **Call `/api/verify-address`** with the claimed identity and the holder's address
+4. **Verify the proof hash** — recompute from claimed data using section 3, check it matches the inscription
 
 ```
 Claimed owner provides: identity + item serial + category + registration time
                                ↓
 Verifier computes:    identity_hash = HMAC-SHA256(pepper, identity)
                       proof_hash = SHA-256(preimage)
-                      address = P2PKH(derive_bitcoin_key(identity, domain, proof_hash))
+                               ↓
+Verifier calls:       POST /api/verify-address { identity, address, keyID=proof_hash }
                                ↓
 Verifier checks:      proof_hash matches inscription on-chain?  ✓
-                      address matches current UTXO holder?      ✓
+                      verify-address returns verified: true?     ✓
                                ↓
-                      Ownership verified. No server needed.
+                      Ownership verified.
 ```
 
-**Dependencies for independent verification:**
+### 7.3 Offline verification (with salt backup)
+
+For scenarios where the key derivation service is unavailable, the user's salt (presentation key) can be used directly with the published algorithm (section 4.1). Salt backups are available via:
+
+- **Contract PDFs** (Helt Enig): salt embedded in the signed document
+- **User export**: users can download their salt from the service dashboard
+- **Recovery phrase**: salt can be derived from a BIP39 seed phrase (future)
+
+**Dependencies for offline verification:**
 - This specification (published, MIT license)
 - Access to BSV blockchain (any node or block explorer)
-- SHA-256 + HMAC-SHA256 + HKDF-SHA256 (standard cryptography)
-- secp256k1 (standard elliptic curve)
+- The user's salt (presentation key)
 - The owner's identity claim (PID or email+phone)
+- SHA-256 + HMAC-SHA256 + HKDF-SHA256 + secp256k1 (standard cryptography)
 
 ---
 
-## 7. Security
+## 8. Security
 
-### 7.1 Threat model
+### 8.1 Threat model
 
 | Threat | Mitigation |
 |--------|-----------|
@@ -354,38 +477,32 @@ Verifier checks:      proof_hash matches inscription on-chain?  ✓
 | PID rainbow tables | HMAC pepper eliminates precomputed tables (section 3.2) |
 | Hash collision | SHA-256: ~2^128 operations required — computationally infeasible |
 | Blockchain manipulation | BSV: proof-of-work consensus, economically infeasible to alter |
-| Unauthorized transfer | Requires owner's derived key (derived from BankID or email+phone) |
-| Database breach | Identity stored only as peppered HMAC hash, never in plaintext |
+| Unauthorized transfer | Requires owner's derived key (identity + 256-bit salt) |
+| Database breach | Identity stored only as peppered HMAC hash; salt alone is useless without identity |
 | Service compromised | Existing proofs are NOT invalidated — they live on-chain |
-| Key derivation server down | Algorithm is published — anyone can run it |
+| Key derivation server down | Algorithm is published — anyone with the salt can run it (section 7.3) |
 
-### 7.2 Entropy, key derivation, and deliberate tradeoffs
+### 8.2 Entropy and salt-based security
 
-**Important:** The key derivation algorithm produces a *private key* from identity inputs. For PID-based derivation (~33 bits of entropy, ~5 million valid values), an attacker can brute-force all valid PIDs in seconds to:
+Key derivation uses a per-user 256-bit random salt (presentation key) concatenated with the identity input before HKDF extraction. This eliminates the brute-force vulnerability that existed in protocol versions prior to v0.6.0.
 
-1. **Derive the private key** for any inscription (given the on-chain proof_hash as keyID)
-2. **Transfer the 1SatOrdinal** to a different address (unauthorized ownership transfer)
-3. **Identify the owner's PID** by matching derived addresses against on-chain data
+**Security analysis:**
 
-**This is a known and accepted tradeoff for this protocol's use case.** The rationale:
+| Attack | Without salt (v0.5.0) | With salt (v0.6.0) |
+|--------|----------------------|-------------------|
+| Brute-force PID → key | ~5M attempts (~seconds) | ~2^256 attempts (infeasible) |
+| Rainbow table on PIDs | Mitigated by HMAC pepper only | Salt adds 256 bits; infeasible |
+| Address → identity linkage | Possible by trying all PIDs | Requires salt (server-held) |
+| Unauthorized UTXO transfer | Possible if PID known | Requires identity + salt |
 
-- The 1SatOrdinal has no monetary value (~0.00001 USD). Economic incentive for theft is zero.
-- The original registration and full transfer history remain permanently visible on-chain. Unauthorized transfers are forensically detectable.
-- The protocol's core value is *proof of existence and provenance*, not custodial asset security.
-- Verification without any server requires that addresses are derivable from identity — this inherently means the private key is also derivable.
+**The salt resolves the "verifier paradox"** of earlier versions: verification no longer requires the ability to derive the private key. The public `/api/verify-address` endpoint confirms address ownership without exposing the salt.
 
-**For email+phone derivation**, entropy is significantly higher (email address + phone number combination), making brute-force impractical without prior knowledge of both inputs.
+**Remaining limitations:**
+- Server-side key derivation means the user does not have sole control of signing keys. This protocol produces Simple Electronic Signatures (SES) under eIDAS, not Advanced (AES) or Qualified (QES).
+- The salt is a single point of failure — if lost and no backup exists, the derived keys cannot be recreated. Services SHOULD provide salt export/backup mechanisms.
+- For custody of high-value digital assets or eIDAS AES/QES requirements, use independently generated keypairs (hardware wallets, WebAuthn/Passkeys, or EUDI Wallet — see section 8.3).
 
-**The keyID mechanism** (section 4.1.1) mitigates *linkability*: even after deriving one address, an attacker cannot discover other registrations by the same identity without knowing their proof hashes.
-
-**This protocol is NOT suitable for:**
-- Custody of high-value digital assets
-- Scenarios requiring "sole control" over signing keys (eIDAS Advanced/Qualified signatures)
-- Applications where unauthorized UTXO transfer has material consequences
-
-For such use cases, use independently generated keypairs with proper key management (hardware wallets, WebAuthn/Passkeys) and an identity attestation model instead of deterministic derivation.
-
-### 7.3 Privacy (GDPR)
+### 8.3 Privacy (GDPR)
 
 **Important regulatory note:** Under EDPB and CNIL guidance, HMAC-hashed identity data constitutes **pseudonymization, not anonymization**. Pseudonymized data remains personal data under GDPR. This has specific implications for this protocol:
 
@@ -406,7 +523,7 @@ Current privacy properties:
 
 ---
 
-## 8. Protocol Constants
+## 9. Protocol Constants
 
 All constants are public. This is by design — the security model does not depend on any constant being secret.
 
@@ -415,23 +532,67 @@ All constants are public. This is by design — the security model does not depe
 | Protocol version | `"beviset-v1"` | Proof hash preimage |
 | PID pepper | `"beviset-protocol-pid-pepper-v1-datamynt"` | Identity hashing (BankID) |
 | Identity pepper (email+phone) | `"beviset-protocol-identity-pepper-v1-datamynt"` | Identity hashing (email+phone) |
-| Key domain (BankID) | `"beviset-v1-keygen"` | HKDF-Extract |
+| Key domain (BankID) | `"wab-keygen-beviset-v1"` | HKDF-Extract |
 | Key domain (email+phone) | `"beviset-v1-keygen-emailphone"` | HKDF-Extract |
+| Key domain (email) | `"beviset-v1-keygen-email"` | HKDF-Extract |
 | HKDF info (base) | `"bitcoin-key-derivation" \|\| 0x01` | HKDF-Expand (no keyID) |
 | HKDF info (child) | `"bitcoin-key-derivation:" \|\| key_id \|\| 0x01` | HKDF-Expand (with keyID) |
+| Salt size | 256 bits (64 hex chars) | Per-user presentation key |
 | Inscription content-type | `application/json` | 1SatOrdinal metadata |
 
 ---
 
-## 9. References
+## 10. EUDI Migration Path
+
+### 10.1 Identity upgrade via UTXO transfer
+
+Because each ownership certificate is a 1SatOrdinal UTXO, a user can **upgrade their identity method** without losing the proof. The inscription (proof hash, timestamp, category) is permanently on-chain. Only the holder address changes.
+
+```
+Migration flow:
+  1. User verifies with new identity method (e.g., EUDI Wallet)
+  2. Service derives new Bitcoin address from EUDI identity
+  3. User signs a transfer TX: old address → new EUDI address
+  4. The UTXO chain now shows: registration → identity upgrade
+  5. The inscription is unchanged — the proof is intact
+```
+
+This is a standard Bitcoin transaction — no protocol changes are needed. The UTXO model natively supports identity migration.
+
+### 10.2 EUDI Wallet integration (planned, 2027+)
+
+When EUDI Wallet (eIDAS 2.0) becomes available, it provides:
+
+- **Free identity verification** — state infrastructure, no per-transaction BankID cost
+- **Qualified Electronic Signature (QES)** — highest legal signature level under eIDAS
+- **On-device key generation** — the user has sole control of their signing key
+- **Selective disclosure** — share only the attributes needed (e.g., full name without PID)
+
+EUDI-based key derivation will use the same HKDF-SHA256 algorithm (section 4.1) with a new domain separator (e.g., `"beviset-v1-keygen-eudi"`). Alternatively, the EUDI Wallet may provide its own signing keys directly, eliminating server-side key derivation entirely.
+
+### 10.3 Backwards compatibility
+
+- Existing proofs remain valid — inscriptions are immutable
+- The `/api/verify-address` endpoint will support EUDI identity alongside BankID/email+phone
+- UTXO chain verification naturally includes migration transactions
+- Old identity methods continue to work — EUDI is additive, not a replacement
+
+---
+
+## 11. References
 
 - SHA-256: FIPS PUB 180-4
 - HMAC: RFC 2104
 - HKDF: RFC 5869
 - secp256k1: SEC 2, section 2.7.1
+- BRC-22: ARC Transaction Lifecycle (broadcasting + callbacks)
+- BRC-62: BEEF — Background Evaluation Extended Format
+- BRC-74: BSV Unified Merkle Path (BUMP)
 - 1SatOrdinals: https://docs.1satordinals.com
 - BSV SDK (Python): https://github.com/bsv-blockchain/py-sdk
 - BankID OIDC: https://confluence.bankidnorge.no
+- eIDAS: Regulation (EU) No 910/2014
+- eIDAS 2.0: Regulation (EU) 2024/1183 (EUDI Wallet)
 
 ---
 
