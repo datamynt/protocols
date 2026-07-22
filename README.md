@@ -26,6 +26,17 @@ Two-party contract signing with blockchain anchoring. One inscription per signer
 
 > *The contract hash proves what was agreed. The UTXO proves who agreed. The blockchain proves when.*
 
+### [BUDRUNDE.md](./BUDRUNDE.md) — Verifiable Sealed-Bid Auctions *(draft)*
+
+Commit–reveal sealed bids: no party sees any bid before the deadline, and anyone can
+verify afterward that the bid set was not altered.
+
+- SHA256 commitments hide bids until reveal, bind them against change
+- Commitment set anchored before deadline → auctioneer cannot peek, shill, or drop bids
+- Identity-verified bidders (shared foundation) as the defense against Sybil/shill
+
+> *The commitment proves what was bid. The anchor proves the set could not be altered. The identity proves each bid is a distinct person.*
+
 ## Shared foundation
 
 Both protocols use the same key derivation algorithm (HKDF-SHA256, RFC 5869) with independent domain separators per service. The same identity produces different Bitcoin addresses for Beviset and Helt Enig — by design.
