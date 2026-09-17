@@ -1,6 +1,13 @@
 # Helt Enig Protocol — Digital Contract Signing on Bitcoin SV
 
-**Version:** 0.5.0
+> **Withdrawn (2026-09-17).** This version derives a signing key from a person's e-mail address and
+> phone number under published constants (§4), so anyone who knows those two facts can re-derive the
+> key and forge that person's signature. Do not implement it. Anchors made under this version remain
+> on chain, but its signatures should be read as statements by the signing service, not as signatures
+> by the parties. Superseded by [HELTENIG-V2.md](./HELTENIG-V2.md). The text below is kept unchanged
+> for the record.
+
+**Version:** 0.5.0 (withdrawn)
 **Date:** 2026-03-19
 **License (specification):** MIT
 **License (implementations):** Open BSV License

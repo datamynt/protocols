@@ -16,15 +16,25 @@ Register, verify, and transfer ownership proofs anchored as 1SatOrdinal inscript
 
 > *The proof is a satoshi. The owner holds the satoshi. The UTXO chain IS the ownership history.*
 
-### [HELTENIG.md](./HELTENIG.md) — Digital Contract Signing
+### [HELTENIG-V2.md](./HELTENIG-V2.md) — Sealed Agreements *(draft)*
 
-Two-party contract signing with blockchain anchoring. One inscription per signer.
+Multi-party agreement signing where the signing service issues a **seal** over the document, each
+party's signing act, a certificate per party (BRC-52) and its audit log, and anchors the seal's hash
+as a BRC-220 NotaryHash. Parties get the signed PDF and a proof bundle that verifies without the
+service.
 
-- Ricardian contract templates with party-tagged fields
-- Contract text hashed, never stored on-chain
-- Each signer holds their own inscription as a UTXO
+- Parties are keys, not e-mail addresses: no key or identifier is ever derived from personal data
+- Three signature suites, and the verifier must say which one was used: the party's own BRC-100
+  wallet key, a passkey (WebAuthn), or an attestation by the service
+- Identity strength is a certificate type (e-mail control, BankID, ...), not a change to the seal
+- Nothing personal on chain; keys are derived per agreement so public data does not link a person
+  across agreements
 
-> *The contract hash proves what was agreed. The UTXO proves who agreed. The blockchain proves when.*
+> *The seal proves what was signed and how. The certificate proves who. The block header proves when.*
+
+**[HELTENIG.md](./HELTENIG.md) v0.5 is withdrawn.** It derived the signing key from e-mail + phone
+number under published constants, so anyone knowing those two facts could forge a signature. The
+file is kept for the record and must not be implemented.
 
 ### [BUDRUNDE.md](./BUDRUNDE.md) — Verifiable Sealed-Bid Auctions *(draft)*
 
@@ -37,9 +47,11 @@ verify afterward that the bid set was not altered.
 
 > *The commitment proves what was bid. The anchor proves the set could not be altered. The identity proves each bid is a distinct person.*
 
-## Shared foundation
+## Shared foundation (Beviset and the withdrawn Helt Enig v1)
 
-Both protocols use the same key derivation algorithm (HKDF-SHA256, RFC 5869) with independent domain separators per service. The same identity produces different Bitcoin addresses for Beviset and Helt Enig — by design.
+Beviset and Helt Enig v1 use the same key derivation algorithm (HKDF-SHA256, RFC 5869) with independent domain separators per service. The same identity produces different Bitcoin addresses for Beviset and Helt Enig — by design.
+
+Helt Enig v2 does **not** use this foundation. It derives keys per agreement with BRC-42/43 from keys the parties or the service hold, and puts identity attributes in BRC-52 certificates instead of in key derivation (see HELTENIG-V2.md §9.1 for why).
 
 ```
 Identity (BankID PID or email+phone)
@@ -68,7 +80,7 @@ def derive_key(identity_input: str, domain: str) -> bytes:
 
 ## License
 
-- **Specifications** (BEVISET.md, HELTENIG.md): [MIT License](./LICENSE-MIT)
+- **Specifications** (BEVISET.md, HELTENIG-V2.md, HELTENIG.md, BUDRUNDE.md): [MIT License](./LICENSE-MIT)
 - **Code** (implementations): [Open BSV License](./LICENSE-BSV)
 
 ## Links
