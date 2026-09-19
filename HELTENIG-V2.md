@@ -1,8 +1,9 @@
 # Helt Enig Protocol v2 — Sealed Agreements on Bitcoin SV
 
-**Version:** 2.0.0-draft.2
-**Date:** 2026-09-17
-**Status:** Draft for review. Not yet implemented. draft.1 was reviewed adversarially on 2026-09-17; Appendix C lists what changed.
+**Version:** 2.0.0-draft.3
+**Date:** 2026-09-19
+**Status:** Draft for review. draft.1 was reviewed adversarially on 2026-09-17; Appendix C lists what changed
+in draft.2, Appendix D what changed in draft.3.
 **Supersedes:** [HELTENIG.md](./HELTENIG.md) v0.5 (withdrawn, see §1.3)
 **License (specification):** MIT
 **License (implementations):** Open BSV License
@@ -281,11 +282,12 @@ Implementations and verifiers MUST describe it that way.
 
 | Field | Meaning |
 |---|---|
-| `email` | The address the party proved control of. |
+| `email` | The address the issuer sent the personal link to, and which the party showed access to by the `method` below (§9.8). |
 | `name` | The name as entered by the sender. **Not verified.** |
 | `nameSource` | Always `"sender"` for this type. |
-| `linkSentAt`, `linkOpenedAt`, `codeVerifiedAt` | Times of the e-mail link and one-time code steps, as recorded by the issuer. |
-| `method` | `"email-link+one-time-code"` |
+| `linkSentAt`, `linkOpenedAt` | When the issuer sent the personal link, and when it was first opened, as recorded by the issuer. |
+| `codeVerifiedAt` | When a one-time code was verified. Present if and only if `method` names a one-time code. |
+| `method` | How control of the address was established. Defined values: `"email-link"` (the personal link was the signing credential) and `"email-link+one-time-code"` (the link, plus a code mailed to the same address and typed back). An issuer MAY define further values for additional factors (§4.4.1). |
 | `webauthnPublicKey` | The passkey public key (SEC1 hex). Present when the party registered a passkey before the certificate was issued. |
 
 **Type `authenticated-sender`** — type id = base64 of `H("heltenig v2 certificate authenticated-sender")`
@@ -299,6 +301,26 @@ Implementations and verifiers MUST describe it that way.
 Future certificate types (a BankID identity certificate from an identity broker, a BRC-169 organisation
 delegation certificate) plug in as additional certificates for the same subject key. They MUST be listed in
 the seal (§4.6) to be considered.
+
+#### 4.4.1 `method` and what it must not claim
+
+`method` is the certificate's statement about what the party actually did, and the field a reader leans on
+when deciding what a signature is worth. Therefore:
+
+- The issuer MUST set `method` to the factors the party actually completed, and MUST NOT name a factor that
+  was not exercised for that party. Where the issuer's own records cannot tell the factors apart, it MUST
+  choose the weaker value.
+- `codeVerifiedAt` MUST be present when `method` names a one-time code, and MUST be absent otherwise. An
+  issuer MUST NOT emit a certificate with one and not the other; a verifier MAY report the mismatch, and
+  MUST NOT read a `codeVerifiedAt` as a factor that `method` does not name.
+- An issuer that adds a second factor (a code, an SMS, a passkey challenge, a wallet) MUST record it in
+  `method` rather than leaving `method` unchanged; a value not listed here is permitted and SHOULD read as
+  `email-link+<factor>`.
+- Verifiers MUST NOT reject a bundle for carrying a `method` they do not recognise; an unrecognised value is
+  handled exactly like an unrecognised certificate type (§6.1 V6, §6.2). Both defined values verify
+  identically: `method` changes what the certificate claims, not how it is checked.
+
+Bundles issued under an earlier `method` remain valid; the value records history and is never rewritten.
 
 ### 4.5 Disclosures
 
@@ -430,7 +452,10 @@ recomputable trail; it contains IP addresses and user agents and is omitted by d
    `originalSha256` and generates `agreementId`.
 2. The issuer invites each party with a personal link.
 3. For each party:
-   1. The party opens the link and proves control of the e-mail address with a one-time code.
+   1. The party opens the personal link. Delivery of that link to the party's address, and its use within
+      its validity window, is what establishes control of the address; an issuer MAY require a further
+      factor and then records it in `method` (§4.4.1). The issuer MUST NOT treat the mere opening of a link
+      as a signature: a mail scanner, a link preview or a prefetcher opens links (§9.9).
    2. The party chooses how to sign. For a passkey, the party registers it now (WebAuthn `create`) and the
       issuer records the SEC1 public key; for a wallet, the issuer obtains the party's identity key and
       `K_party(i)`.
@@ -567,6 +592,20 @@ The certificate page inside the signed PDF SHOULD show `agreementId`, `originalS
 e-mail, suite in plain language, that parties viewed the issuer's rendering, and the verification address.
 It cannot show `sealHash` or the anchor, because both are computed after the PDF.
 
+### 7.7 The personal link as a credential
+
+An issuer that lets the personal link stand as the signing credential MUST:
+
+- deliver the link only to the party's own address, and give it enough entropy that it cannot be guessed
+  (at least 128 bits) while storing only its hash;
+- bound its validity, and record in `linkSentAt` the issue time the window is measured from. Reissuing a link
+  (invitation, resend, reminder, or a party's request) MUST invalidate the previous one and start a new
+  window;
+- make signing an explicit act that a request to the link's URL cannot perform on its own: a state-changing
+  method, an affirmative consent step, and a defence against cross-site submission (§9.9);
+- let a party whose link has expired obtain a new one, sent to the same address it was first sent to, without
+  revealing that address to whoever asked, and rate-limit that request.
+
 ---
 
 ## 8. Canonicalization and versioning
@@ -637,7 +676,38 @@ controlled by a cloud account. The certificate binds the passkey to the e-mail c
 not strengthen identity beyond that check. The origin and RP ID are fixed in the seal, so a later manifest
 cannot retroactively widen them.
 
-### 9.8 What "confirmed by domain" means
+### 9.8 What a link-only signature shows
+
+A signature at `method = "email-link"` shows that someone with access to the mail delivered to that address
+completed the signing steps within the link's validity window. It does not show which human that was. Mail is
+forwarded, mailboxes are shared, and an address belongs to an employer more often than to a person, so the
+signer may be a colleague, an assistant or a successor in the same role. A mailbox compromised during the
+window is a valid link. The window bounds the exposure: it is what separates "had access to the inbox then"
+from "has the mail archive now".
+
+This is still A0 (§10), a simple electronic signature — the same level as link plus one-time code, because a
+code mailed to the address the link was mailed to tests the same channel a second time and adds little the
+first did not establish. Issuers MAY add a second factor over a different channel, and MUST then record it in
+`method` (§4.4.1); only that changes what the certificate claims.
+
+Two things carry the weight instead of the factor count: the trail (link sent, link opened, consent
+confirmed with the document hash, signed, each with time, IP and user agent, hash-chained per Appendix A) and
+the seal's anchor, which fixes when the record existed. A verifier MUST present the method as the certificate
+states it and MUST NOT describe a link-only signature as identity-verified.
+
+### 9.9 Opening a link is not signing
+
+Anything between the sender and the party opens links: scanners in the mail path, link previews in chat
+clients, prefetchers in browsers and mail apps, archivers. An issuer whose link signs on GET, or on any
+request without an affirmative act, will record signatures nobody made, and the audit trail will say they
+were made from the scanner's address.
+
+An issuer MUST therefore require, for the signing act itself: a state-changing request (never GET), an
+explicit consent step by the party in that request, and a check that the request came from the issuer's own
+page (an origin check, a token, or both). `linkOpenedAt` records an opening, never a signature, and an
+implementation SHOULD expect openings it cannot attribute to the party.
+
+### 9.10 What "confirmed by domain" means
 
 The manifest is controlled by whoever holds the domain. Predecessor proofs stop a new domain holder from
 inserting a key the previous holder did not endorse, but the first key in the list is trusted on the domain's
@@ -649,9 +719,13 @@ word alone. A verifier that has `I` from another channel SHOULD compare it.
 
 | Level | Party signature | Identity certificate | Plain-language claim |
 |---|---|---|---|
-| **A0** | `issuer-attestation` | `email-control` | The issuer states that someone controlling this e-mail address completed the signing steps. |
+| **A0** | `issuer-attestation` | `email-control` (any `method`) | The issuer states that someone with access to the mail delivered to this e-mail address completed the signing steps. |
 | **A1** | `webauthn-es256` or `brc100-secp256k1` | `email-control` | Someone controlling this e-mail address signed with a key only they control. |
 | **A2** | as A1 | an identity certificate from a recognised identity provider (e.g. BankID) | A person identified by that provider signed with a key only they control. |
+
+The `method` on an `email-control` certificate does not change the level: a one-time code mailed to the same
+address tests the same channel twice, so link-only and link-plus-code are both A0. A factor over a different
+channel, or a key the party alone holds, is what moves a signature up, and A1 asks for the latter.
 
 Under eIDAS (Regulation (EU) No 910/2014), A0 is a simple electronic signature. A1 is designed to meet three
 of the four requirements of an advanced electronic signature in art. 26: uniquely linked to the signatory
@@ -750,6 +824,22 @@ From the adversarial review of 2026-09-17 (`REVIEW-2.0.0-draft.1.md`):
 - **M8** §8 state token, `K_state`, V10 and the overlay references removed; `previous` reserved as `null`.
 - **L1–L4** §1.2 states what a bundle proves; normative text moved out of §5 and §10 into §7; eIDAS
   wording corrected; encodings declared per field; `size` dropped.
+
+## Appendix D. Changes from 2.0.0-draft.2 (informative)
+
+- **D1** `method` on `email-control` gains the value `email-link` for a signature where the personal link
+  itself was the credential, alongside `email-link+one-time-code`. §4.4.1 states what `method` must not
+  claim, ties `codeVerifiedAt` to it, requires a second factor to be recorded in it, and requires verifiers
+  to pass an unrecognised value through rather than reject the bundle. Existing bundles keep verifying.
+- **D2** §7.7: what an issuer must do if the personal link is the signing credential — delivery to the
+  party's own address, entropy and hashed storage, a bounded window measured from `linkSentAt` that every
+  reissue restarts, an explicit signing act, and a rate-limited way to get a fresh link without disclosing
+  the address.
+- **D3** §9.8 states plainly what a link-only signature shows and what it does not, names forwarding and
+  shared mailboxes as the residual risk, and keeps the level at A0 either way. §10 says the same for the
+  table: `method` does not move the level; a factor on another channel or a party-held key does.
+- **D4** §9.9: opening a link is not signing. Scanners and prefetchers open links, so the signing act needs a
+  state-changing request, affirmative consent and a same-origin check. §5 step 3.1 rewritten accordingly.
 
 ## References
 
