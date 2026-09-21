@@ -1,9 +1,9 @@
 # Helt Enig Protocol v2 — Sealed Agreements on Bitcoin SV
 
-**Version:** 2.0.0-draft.4
+**Version:** 2.0.0-draft.5
 **Date:** 2026-09-21
 **Status:** Draft for review. draft.1 was reviewed adversarially on 2026-09-17; Appendix C lists what changed
-in draft.2, Appendix D what changed in draft.3, Appendix E what changed in draft.4.
+in draft.2, Appendix D what changed in draft.3, Appendix E what changed in draft.4, Appendix F what changed in draft.5.
 **Supersedes:** [HELTENIG.md](./HELTENIG.md) v0.5 (withdrawn, see §1.3)
 **License (specification):** MIT
 **License (implementations):** Open BSV License
@@ -212,6 +212,13 @@ converts the credential's COSE key to SEC1 once, at registration; verifiers comp
 **Sole control:** yes, subject to the authenticator. Synced passkeys (iCloud Keychain, Google Password
 Manager) are controlled by the party's cloud account; verifiers SHOULD report the `BE`/`BS` flags.
 
+**What is established, and what is only stated.** Passkeys are registered without attestation (synced
+passkeys offer none), so neither the issuer nor a verifier can know what kind of authenticator holds the key.
+What a verified assertion establishes is that the credential key registered for the address, a key the issuer
+never held, signed this statement. That a person was verified by biometrics or a screen lock (`UV`), and
+whether the passkey is synced (`BE`/`BS`), are the authenticator's own statements. Issuers and verifiers
+MUST present them as statements ("the passkey states that …"), never as facts (§6.2, §9.7).
+
 ### 3.3 `issuer-attestation` — the issuer states that the party signed
 
 For a party with neither a wallet nor a passkey. The issuer signs `statementHash` with `K_att(i)`.
@@ -380,7 +387,9 @@ Bundles issued under an earlier `method` remain valid; the value records history
 ### 4.5 Disclosures
 
 A proof bundle is handed to the parties and whoever they share it with. By default the bundle discloses
-exactly the fields printed on the certificate page of the signed PDF (names, e-mail addresses, times). The
+the fields printed on the certificate page of the signed PDF (names, e-mail addresses, times) and, for a
+passkey party, `webauthnPublicKey` and `passkeyRegisteredAt`, which V6 needs and which add nothing the
+signature object does not already show (§9.6). The
 issuer places the raw 32-byte BRC-52 field revelation keys for those fields in the bundle, base64:
 
 ```json
@@ -548,9 +557,12 @@ failure makes the result **invalid**, and the verifier MUST name the failing ste
     MUST verify over `statementHash`.
   - `brc100-secp256k1`: the signature MUST verify over `statementHash` under `signature.publicKey`, and that
     key MUST equal the primary certificate's `subject` (V6).
+  - Every secp256k1 signature in a bundle MUST be low-S (§2.4), and a verifier MUST reject a high-S one
+    rather than normalise it: two verifiers that disagree about one bundle are worse than either rule.
   - `webauthn-es256`: decode `clientDataJSON`; `type` MUST be `"webauthn.get"`; the base64url `challenge`
     MUST decode to `statementHash`; `origin` MUST equal `seal.issuer.webauthn.origin`; `crossOrigin` MUST be
-    absent or `false`. In `authenticatorData`, `rpIdHash` MUST equal `H(seal.issuer.webauthn.rpId)` and the
+    absent or the JSON boolean `false` (the number `0` is not `false`). `clientDataJSON` MUST be UTF-8 without
+    a byte order mark, and every base64url value MUST be in canonical unpadded form. In `authenticatorData`, `rpIdHash` MUST equal `H(seal.issuer.webauthn.rpId)` and the
     UP and UV flags MUST be set. The ES256 signature MUST verify over `authenticatorData || H(clientDataJSON)`
     under `signature.publicKey`. Report the `BE`/`BS` flags.
   - `webauthn-prf-secp256k1`: every `webauthn-es256` check above MUST pass on `signature.webauthn` (its
@@ -600,6 +612,9 @@ A conforming verifier reports, per party, **how** that party signed, never just 
 - `webauthn-prf-secp256k1`: "signed with a passkey on their device, and with their own key derived from
   it" (+ synced / not synced when known). A verifier MUST NOT shorten this to the wording of
   `brc100-secp256k1`: the key was computed in a page the issuer served (§9.7).
+
+For both passkey suites the report states user verification and sync status as what the passkey states
+(§3.2), and MUST NOT say where or how the signature was physically made.
 - `issuer-attestation`: "the issuer states that this party completed the signing steps"
 
 plus the certificate types that establish identity (e.g. "controls the e-mail address a***@example.com",
@@ -679,6 +694,13 @@ An issuer that lets a party sign with a passkey (§3.2, §3.4) MUST:
   under this protocol (a party who has completed the signing steps through a valid personal link, or an
   authenticated sender), and tell the address by e-mail that a passkey was registered, with a way to remove
   it;
+- register only within a short time of that party's signing act (15 minutes is reasonable), never on a
+  cancelled agreement, and never replace an active passkey silently: the holder removes the old one first,
+  with the link from the notice. Otherwise a personal link that leaks later (a forwarded mail, a shared
+  inbox) becomes a standing credential for every future sender;
+- check at registration that the authenticator data carries attested credential data, that its credential
+  id is the one presented, and that its public key is the one stored. This binds the three values to each
+  other; it does not attest the authenticator (§3.2);
 - choose the WebAuthn `user.id` with a CSPRNG (§9.1) and show the party's own address as `user.name`, so the
   party recognises the passkey in their device's list;
 - store only the credential id, the SEC1 public key and, for §3.4, the public key of `R` together with a
@@ -687,6 +709,8 @@ An issuer that lets a party sign with a passkey (§3.2, §3.4) MUST:
 - keep the personal link as what establishes control of the address for **each** agreement. The passkey is
   added to the link, never used instead of it, and the certificate says `method = "email-link+passkey"`. A
   passkey registered during an earlier compromise of the mailbox is therefore useless without the mailbox;
+- keep passkey trouble away from link signing: a failing passkey table, lookup or script MUST leave the link
+  flow exactly as it is for a party without a passkey;
 - fall back without loss to the party: a device without PRF support signs with `webauthn-es256`, and a
   device without a usable passkey, or a party who dismisses the prompt, signs with `issuer-attestation`
   (§7.1). A passkey prompt MUST NOT stand between a party and the ability to sign;
@@ -753,6 +777,11 @@ validate proof of work over a header chain, and SHOULD make the source explicit 
 - Key derivation per agreement prevents linking a party or the issuer's seal keys across agreements. The
   passkey root `R` (§2.3) is the same for every agreement and is therefore known to the issuer only, who
   already knows the address it belongs to; it MUST NOT appear in a bundle, a certificate or on chain.
+- The passkey's own P-256 public key cannot be derived per agreement: it is one key for every agreement that
+  party signs with that passkey, and it stands in the signature object of each bundle. A default bundle
+  already names the party by e-mail address, so the key tells its holder nothing new; but a bundle variant
+  with fewer disclosures (§4.5) still carries it, and two such bundles can be linked by it. Issuers MUST say
+  so when they offer reduced disclosure. `K_party(i)` does not have this property.
 - Funding: anchors paid from one issuer wallet can be clustered by transaction-graph analysis, revealing the
   issuer's anchoring volume and timing.
 - Lookup is by `signedDocument.sha256` only (§7.5) and rate-limited.
@@ -781,9 +810,14 @@ For §3.4, four further points:
   `K_party(i)`'s public key, so past signatures verify for ever; the next agreement is signed with a new
   passkey or by link. There is nothing to back up and no recovery flow to attack. This stops being true the
   moment such a key controls funds or state (§11).
-- **One root per passkey, one key per agreement.** Signing with `R` directly, or with any key that repeats
-  across agreements, would give every bundle a person shares the same identifier. Implementations MUST sign
-  with the per-agreement child only.
+- **One root per passkey, one key per agreement.** Signing with `R` directly, or with any secp256k1 key that
+  repeats across agreements, would give every bundle a person shares the same identifier. Implementations
+  MUST sign with the per-agreement child only. (The passkey's own P-256 key does repeat, and cannot be made
+  not to; §9.6 says what follows from that.)
+- **No attestation, so no facts about the authenticator.** A party can register a software key and set any
+  flag. That weakens that party's own evidence and nobody else's: it still takes the personal link to sign,
+  and the signature is still by a key the issuer never held. It is why §3.2 separates what is established
+  from what is stated.
 
 ### 9.8 What a link-only signature shows
 
@@ -969,6 +1003,24 @@ From the adversarial review of 2026-09-17 (`REVIEW-2.0.0-draft.1.md`):
 - **E5** §9.7 states the limits of a key derived in the issuer's page, what synced passkeys mean for it, why
   key loss is free for signatures, and records the first device measurements. §9.6: `R` never appears in a
   bundle, a certificate or on chain. §11 defers transactions co-signed by party keys.
+
+## Appendix F. Changes from 2.0.0-draft.4 (informative)
+
+From the adversarial review of the first implementation (2026-09-21):
+
+- **F1** §3.2: what a passkey signature establishes (the registered credential key signed; the issuer never
+  held it) is separated from what the authenticator merely states (user verification, sync status).
+  Registration is without attestation, so issuers and verifiers present the latter as statements. §6.2 and
+  §9.7 follow.
+- **F2** V4: `crossOrigin` must be absent or the boolean `false`; `clientDataJSON` without a byte order
+  mark; canonical base64url; verifiers reject high-S secp256k1 signatures instead of normalising them. Each
+  was a case where two conforming-looking verifiers disagreed about one bundle.
+- **F3** §7.8: registration only shortly after the signing act, never on a cancelled agreement, never as a
+  silent replacement; attested credential data checked for consistency; passkey failures never reach the
+  link flow.
+- **F4** §4.5 and §9.6: the default disclosure includes the two passkey fields V6 needs, and the passkey's
+  P-256 key is named for what it is: one key across agreements, visible in every bundle's signature object,
+  and therefore a linking value in reduced-disclosure variants.
 
 ## References
 
