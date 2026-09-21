@@ -1,9 +1,9 @@
 # Helt Enig Protocol v2 — Sealed Agreements on Bitcoin SV
 
-**Version:** 2.0.0-draft.3
-**Date:** 2026-09-19
+**Version:** 2.0.0-draft.4
+**Date:** 2026-09-21
 **Status:** Draft for review. draft.1 was reviewed adversarially on 2026-09-17; Appendix C lists what changed
-in draft.2, Appendix D what changed in draft.3.
+in draft.2, Appendix D what changed in draft.3, Appendix E what changed in draft.4.
 **Supersedes:** [HELTENIG.md](./HELTENIG.md) v0.5 (withdrawn, see §1.3)
 **License (specification):** MIT
 **License (implementations):** Open BSV License
@@ -33,7 +33,7 @@ contacting the issuer, and after the issuer has ceased to exist.
 
 A verified bundle proves that a holder of the issuer key `I` sealed exactly this document with exactly these
 statements and certificates, and that the seal existed no later than the block that contains the anchor.
-Where a party signed with a key only the party holds (§3.1, §3.2), it also proves that key signed the
+Where a party signed with a key only the party holds (§3.1, §3.2, §3.4), it also proves that key signed the
 party's statement. It does not prove who `I` belongs to: that comes from the issuer's domain (§2.2, V5) or
 from a key the verifier already trusts. It does not make a signature "qualified" or "legally binding"; §10
 says what each assurance level can honestly claim.
@@ -121,7 +121,7 @@ Protocol names follow BRC-43: lowercase letters, digits and single spaces, 5–2
 |---|---|---|---|---|
 | `K_seal` — signs the seal | Issuer | `[2, "heltenig agreement seal"]` | `agreementId` | `anyone` |
 | `K_att(i)` — speaks for party `i` when the party holds no key; certificate subject for that party | Issuer | `[2, "heltenig party attestation"]` | `agreementId + " " + i` | `anyone` |
-| `K_party(i)` — a wallet party's signing key | Party wallet | `[2, "heltenig agreement signature"]` | `agreementId` | `I` |
+| `K_party(i)` — the party's own signing key | Party wallet (§3.1), or the party's browser from the passkey root `R` (§3.4) | `[2, "heltenig agreement signature"]` | `agreementId` | `I` |
 
 The `anyone` counterparty is the BRC-43 public counterparty (private key `1`). A verifier therefore computes
 `K_seal` and every `K_att(i)` from `I` and the invoice number alone, and MUST do so (V4, V7): a bundle whose
@@ -131,6 +131,20 @@ counterparty `self` MUST NOT be used, because no verifier can derive them.
 `K_party(i)` is derived by the party's wallet with counterparty `I` and `forSelf: true` (BRC-56/BRC-100
 `getPublicKey`). The issuer computes the same public key from `I`'s private key and the party's identity key
 (BRC-42 is symmetric) and MUST reject a presented key that does not match.
+
+**Passkey root `R` (suite §3.4).** A party without a wallet can hold the same kind of key through a passkey
+that supports the WebAuthn PRF extension. `prfOutput` is the 32-byte result of `prf.eval.first` with the
+input fixed to the UTF-8 bytes of `heltenig v2 party root`. The root private key is
+
+`R_priv = HMAC-SHA256(key = prfOutput, message = UTF-8("heltenig v2 party root key"))`
+
+read as a big-endian integer, which MUST lie in `[1, n-1]` (otherwise the passkey cannot be used with §3.4).
+`R` stands where a wallet's identity key stands: `K_party(i)` is the BRC-42 child of `R` with the protocolID,
+keyID and counterparty of the table above, and the issuer checks it the same way, from `R`'s public key and
+`I`'s private key. `R` depends only on the passkey and the relying party, so it is the same on every device
+the passkey is synced to. Nothing in the derivation comes from personal data (§9.1). `prfOutput`, `R_priv` and
+`K_party(i)`'s private key exist only in the party's browser for the duration of one signing ceremony; the
+issuer MUST NOT receive or store any of them.
 
 Because every key is derived with `agreementId`, public keys of the same person or issuer do not repeat
 across agreements.
@@ -153,8 +167,9 @@ across agreements.
 ## 3. Signature suites
 
 A party's signing act is a **signing statement** (§4.3) and a signature over `statementHash = H(JCS(statement))`.
-Three suites are defined. An issuer MUST support `issuer-attestation`, SHOULD support `webauthn-es256`, and
-MAY omit `brc100-secp256k1` (§11).
+Four suites are defined. An issuer MUST support `issuer-attestation`, SHOULD support `webauthn-es256`, MAY
+support `webauthn-prf-secp256k1` (and MUST then also support `webauthn-es256`, §7.8), and MAY omit
+`brc100-secp256k1` (§11).
 
 ### 3.1 `brc100-secp256k1` — party signs with a BRC-100 wallet
 
@@ -211,6 +226,41 @@ output MUST say that the issuer, not the party, signed (§6.2).
 
 **Sole control:** no.
 
+### 3.4 `webauthn-prf-secp256k1` — party signs with a passkey and with a key derived from it
+
+One WebAuthn ceremony yields two signatures over the same statement: the passkey's own ES256 assertion, as
+in §3.2, and an ECDSA-secp256k1 signature by `K_party(i)`, derived in the browser from the passkey's PRF
+output (§2.3). The party ends up holding a Bitcoin-capable key without a wallet, a seed phrase or an
+installation.
+
+Before the ceremony the issuer MUST hold, from the passkey's registration (§7.8), its SEC1 public key and the
+public key of `R`. The issuer derives the expected `K_party(i)`, issues the primary certificate with
+`subject = K_party(i)` and `webauthnPublicKey`, and builds the statement, which for this suite carries the
+additional member `partyKey` = `K_party(i)` (§4.3). The assertion is requested as in §3.2 (`challenge` = the
+32 bytes of `statementHash`, `userVerification: "required"`, the seal's origin) with `prf.eval.first` set as
+§2.3 defines. The client derives `R_priv` and `K_party(i)`, MUST verify that the derived public key equals
+`statement.partyKey` before signing, signs the raw 32-byte `statementHash` (DER, low-S), and MUST discard
+`prfOutput` and both private keys when the ceremony ends. It MUST NOT store them or send them anywhere.
+
+Signature object:
+
+```json
+{ "suite": "webauthn-prf-secp256k1", "publicKey": "<K_party(i), hex>", "signature": "<DER hex>",
+  "webauthn": { "publicKey": "<P-256 key, SEC1 uncompressed, hex>", "signature": "<DER hex>",
+                "authenticatorData": "<base64url>", "clientDataJSON": "<base64url>" } }
+```
+
+Because the statement names `K_party(i)` and the assertion's challenge is the statement's hash, the
+authenticator's signature covers the choice of party key: nobody can pair a genuine assertion with a
+secp256k1 key the party did not use, and a copy of `R_priv` alone cannot produce a signature object of this
+suite.
+
+**Sole control:** two answers, and verifiers keep them apart. The passkey signature: yes, subject to the
+authenticator, exactly as §3.2. `K_party(i)`: the issuer never holds it, but it is computed in a page the
+issuer serves, so it is under the party's sole control only as far as that page is honest at signing time
+(§9.7). A device whose passkey has no PRF support signs with §3.2 instead and loses nothing in assurance
+level (§10).
+
 ---
 
 ## 4. Objects
@@ -248,9 +298,12 @@ The consent sentence each party confirmed, stored verbatim with a version label.
 }
 ```
 
+For suite `webauthn-prf-secp256k1` the statement carries one more member, `"partyKey": "<K_party(i), hex>"`.
+It MUST be present for that suite and MUST be absent for every other.
+
 `statementHash = H(JCS(statement))`. The statement binds agreement, document, party slot, roster size,
-certificate, consent and suite, so a signature cannot be moved to another agreement, slot, roster or
-certificate.
+certificate, consent and suite (and, where present, the party key), so a signature cannot be moved to another
+agreement, slot, roster or certificate.
 
 ### 4.4 Party certificates
 
@@ -259,8 +312,8 @@ values encrypted per BRC-52. The certifier signature is made, as BRC-52 specifie
 child key for protocol `[2, "certificate signature"]`, keyID `<type> <serialNumber>`, counterparty `anyone`,
 so any verifier derives the signing key from `I`.
 
-**What these certificates are.** For a wallet party the `subject` is `K_party(i)`, a per-agreement child
-key; for every other party the `subject` is `K_att(i)`, which the issuer holds. In both cases the certificate
+**What these certificates are.** For a party who signs with an own secp256k1 key (§3.1, §3.4) the `subject`
+is `K_party(i)`, a per-agreement child key; for every other party the `subject` is `K_att(i)`, which the issuer holds. In both cases the certificate
 is an artefact of the bundle: no BRC-100 wallet can acquire, store or present it, because BRC-52 storage
 requires the subject to be the wallet's identity key. For a non-wallet party the certificate is therefore the
 issuer's signed, selectively disclosable record of the identity check it performed, and nothing more.
@@ -269,7 +322,7 @@ Implementations and verifiers MUST describe it that way.
 **Common rules**
 
 - `certifier` = `I` (or a `keyHistory` key valid at the anchor block time).
-- `subject` = `K_party(i)` for suite `brc100-secp256k1`, otherwise `K_att(i)`.
+- `subject` = `K_party(i)` for suites `brc100-secp256k1` and `webauthn-prf-secp256k1`, otherwise `K_att(i)`.
 - `serialNumber` = 32 CSPRNG bytes, base64.
 - `revocationOutpoint` = the all-zero outpoint
   `0000000000000000000000000000000000000000000000000000000000000000.0`. **Revocation policy (published as
@@ -287,8 +340,9 @@ Implementations and verifiers MUST describe it that way.
 | `nameSource` | Always `"sender"` for this type. |
 | `linkSentAt`, `linkOpenedAt` | When the issuer sent the personal link, and when it was first opened, as recorded by the issuer. |
 | `codeVerifiedAt` | When a one-time code was verified. Present if and only if `method` names a one-time code. |
-| `method` | How control of the address was established. Defined values: `"email-link"` (the personal link was the signing credential) and `"email-link+one-time-code"` (the link, plus a code mailed to the same address and typed back). An issuer MAY define further values for additional factors (§4.4.1). |
-| `webauthnPublicKey` | The passkey public key (SEC1 hex). Present when the party registered a passkey before the certificate was issued. |
+| `method` | How control of the address was established and what was added to it. Defined values: `"email-link"` (the personal link was the signing credential), `"email-link+one-time-code"` (the link, plus a code mailed to the same address and typed back) and `"email-link+passkey"` (the link, plus a signature by a passkey registered for that address, §7.8). An issuer MAY define further values for additional factors (§4.4.1). |
+| `webauthnPublicKey` | The passkey public key (SEC1 hex). Present when the party signs with a passkey (§3.2, §3.4). |
+| `passkeyRegisteredAt` | When that passkey was registered with the issuer, as recorded by the issuer. Present with `webauthnPublicKey`. It lets a reader tell a passkey made minutes before the signature from one the party has used for months. |
 
 **Type `authenticated-sender`** — type id = base64 of `H("heltenig v2 certificate authenticated-sender")`
 
@@ -317,8 +371,9 @@ when deciding what a signature is worth. Therefore:
   `method` rather than leaving `method` unchanged; a value not listed here is permitted and SHOULD read as
   `email-link+<factor>`.
 - Verifiers MUST NOT reject a bundle for carrying a `method` they do not recognise; an unrecognised value is
-  handled exactly like an unrecognised certificate type (§6.1 V6, §6.2). Both defined values verify
-  identically: `method` changes what the certificate claims, not how it is checked.
+  handled exactly like an unrecognised certificate type (§6.1 V6, §6.2). The defined values verify
+  identically: `method` changes what the certificate claims, not how it is checked. A passkey named in
+  `method` is checked through the suite (V4), not through `method`.
 
 Bundles issued under an earlier `method` remain valid; the value records history and is never rewritten.
 
@@ -368,7 +423,7 @@ from the issuer, not from the party, because for non-wallet parties the issuer h
 
 - `signedDocument` is the PDF delivered to the parties: the original pages plus the issuer's certificate
   page(s). It does not contain the anchor (the anchor is created after the document).
-- `issuer.webauthn` is present when any party used `webauthn-es256`; it fixes the origin and RP ID a
+- `issuer.webauthn` is present when any party used `webauthn-es256` or `webauthn-prf-secp256k1`; it fixes the origin and RP ID a
   verifier checks against, independently of the manifest.
 - `parties[].certificates[0]` is the primary certificate. Additional entries are optional stronger
   certificates for the same subject.
@@ -456,14 +511,15 @@ recomputable trail; it contains IP addresses and user agents and is omitted by d
       its validity window, is what establishes control of the address; an issuer MAY require a further
       factor and then records it in `method` (§4.4.1). The issuer MUST NOT treat the mere opening of a link
       as a signature: a mail scanner, a link preview or a prefetcher opens links (§9.9).
-   2. The party chooses how to sign. For a passkey, the party registers it now (WebAuthn `create`) and the
-      issuer records the SEC1 public key; for a wallet, the issuer obtains the party's identity key and
-      `K_party(i)`.
+   2. The party chooses how to sign. For a passkey, the party uses one registered for the address earlier
+      (§7.8) or registers it now (WebAuthn `create`), and the issuer records the SEC1 public key and, when
+      the passkey supports PRF, the public key of `R`; for a wallet, the issuer obtains the party's identity
+      key and `K_party(i)`.
    3. The issuer issues the party's primary certificate (§4.4), including `webauthnPublicKey` when a
       passkey was registered.
    4. The issuer builds the signing statement with the certificate serial, the consent text and the suite.
-   5. The party signs: WebAuthn assertion (§3.2), wallet signature (§3.1), or by confirming consent, in
-      which case the issuer attests (§3.3).
+   5. The party signs: WebAuthn assertion (§3.2), assertion plus derived key (§3.4), wallet signature
+      (§3.1), or by confirming consent, in which case the issuer attests (§3.3).
 4. When all parties have signed, the issuer renders the signed PDF, computes `signedDocument.sha256`,
    builds and signs the seal, and broadcasts the NotaryHash transaction.
 5. The issuer delivers the signed PDF and the proof bundle to every party, then keeps the bundle current as
@@ -497,6 +553,11 @@ failure makes the result **invalid**, and the verifier MUST name the failing ste
     absent or `false`. In `authenticatorData`, `rpIdHash` MUST equal `H(seal.issuer.webauthn.rpId)` and the
     UP and UV flags MUST be set. The ES256 signature MUST verify over `authenticatorData || H(clientDataJSON)`
     under `signature.publicKey`. Report the `BE`/`BS` flags.
+  - `webauthn-prf-secp256k1`: every `webauthn-es256` check above MUST pass on `signature.webauthn` (its
+    `publicKey`, `signature`, `authenticatorData`, `clientDataJSON`). `statements[i].partyKey` MUST be present
+    and MUST equal `signature.publicKey`; the secp256k1 signature MUST verify over `statementHash` under
+    `signature.publicKey`, and that key MUST equal the primary certificate's `subject` (V6). For every other
+    suite a statement carrying `partyKey` is invalid.
 - **V5 Issuer key.** `I = B.seal.issuer.identityKey`. If the manifest is reachable: every `keyHistory`
   entry after the first MUST carry a valid `proof` by its predecessor; `I` MUST appear in the list; and when
   V8 yields a block time, `I` MUST be valid (`validFrom` ≤ block time < `validTo` or `validTo` null) at that
@@ -507,12 +568,13 @@ failure makes the result **invalid**, and the verifier MUST name the failing ste
   2. The certifier signature MUST verify under the certifier's child key for `[2, "certificate signature"]`,
      keyID `<type> <serialNumber>`, counterparty `anyone`. For primary certificates the certifier MUST be `I`
      (or a `keyHistory` key valid at the anchor block time).
-  3. The primary certificate's `subject` MUST equal `signature.publicKey` for suite `brc100-secp256k1`, and
-     the derived `K_att(i)` otherwise. `statements[i].certificateSerial` MUST equal the primary serial.
+  3. The primary certificate's `subject` MUST equal `signature.publicKey` for suites `brc100-secp256k1` and
+     `webauthn-prf-secp256k1`, and the derived `K_att(i)` otherwise. `statements[i].certificateSerial` MUST equal the primary serial.
   4. Decrypt disclosed fields with the bundle's revelation keys. `agreementId` and `partyIndex`, when
      disclosed, MUST match.
-  5. For `webauthn-es256`, the disclosed `webauthnPublicKey` MUST equal `signature.publicKey`. If that field
-     is not disclosed, report the passkey binding as **undisclosed**.
+  5. For `webauthn-es256`, the disclosed `webauthnPublicKey` MUST equal `signature.publicKey`; for
+     `webauthn-prf-secp256k1` it MUST equal `signature.webauthn.publicKey`. If that field is not disclosed,
+     report the passkey binding as **undisclosed**.
   6. Primary certificates are never revoked (§4.4); report that policy. For other certificates with a
      non-zero `revocationOutpoint`, check that the outpoint is unspent where the verifier has a spend source;
      otherwise report revocation status as **unchecked**.
@@ -535,6 +597,9 @@ A conforming verifier reports, per party, **how** that party signed, never just 
 
 - `brc100-secp256k1`: "signed with a key only they hold"
 - `webauthn-es256`: "signed with a passkey on their device" (+ synced / not synced when known)
+- `webauthn-prf-secp256k1`: "signed with a passkey on their device, and with their own key derived from
+  it" (+ synced / not synced when known). A verifier MUST NOT shorten this to the wording of
+  `brc100-secp256k1`: the key was computed in a page the issuer served (§9.7).
 - `issuer-attestation`: "the issuer states that this party completed the signing steps"
 
 plus the certificate types that establish identity (e.g. "controls the e-mail address a***@example.com",
@@ -606,6 +671,28 @@ An issuer that lets the personal link stand as the signing credential MUST:
 - let a party whose link has expired obtain a new one, sent to the same address it was first sent to, without
   revealing that address to whoever asked, and rate-limit that request.
 
+### 7.8 Passkeys registered for an address
+
+An issuer that lets a party sign with a passkey (§3.2, §3.4) MUST:
+
+- register a passkey for an address only in a session that has just established control of that address
+  under this protocol (a party who has completed the signing steps through a valid personal link, or an
+  authenticated sender), and tell the address by e-mail that a passkey was registered, with a way to remove
+  it;
+- choose the WebAuthn `user.id` with a CSPRNG (§9.1) and show the party's own address as `user.name`, so the
+  party recognises the passkey in their device's list;
+- store only the credential id, the SEC1 public key and, for §3.4, the public key of `R` together with a
+  signature by `R` over the registration challenge (proof of possession). It MUST NOT receive `prfOutput` or
+  any private key;
+- keep the personal link as what establishes control of the address for **each** agreement. The passkey is
+  added to the link, never used instead of it, and the certificate says `method = "email-link+passkey"`. A
+  passkey registered during an earlier compromise of the mailbox is therefore useless without the mailbox;
+- fall back without loss to the party: a device without PRF support signs with `webauthn-es256`, and a
+  device without a usable passkey, or a party who dismisses the prompt, signs with `issuer-attestation`
+  (§7.1). A passkey prompt MUST NOT stand between a party and the ability to sign;
+- explain the prompt before it appears. Browsers word passkey dialogs as signing **in**, and a first-time
+  party who is asked to "sign in" while signing an agreement has reason to stop.
+
 ---
 
 ## 8. Canonicalization and versioning
@@ -636,8 +723,8 @@ A stolen `I` allows forged attestations, certificates and seals. Mitigations: `I
 managed key storage, with `K_seal`/`K_att` derived per agreement; `keyHistory` with predecessor proofs; and
 block time. Because V5 checks validity at the anchor **block** time, a thief cannot launder a seal by writing
 an earlier `sealedAt`: a seal anchored in a block mined after `validTo` is invalid no matter what it claims.
-Seals anchored before the compromise are unaffected. Parties who sign with suites 3.1 or 3.2 are protected
-against forged signatures regardless of issuer compromise; their certificates, however, are still the
+Seals anchored before the compromise are unaffected. Parties who sign with suites 3.1, 3.2 or 3.4 are protected
+against forged signatures regardless of issuer compromise (a stolen `I` does not yield an authenticator); their certificates, however, are still the
 issuer's statements.
 
 ### 9.3 Substitution, replay and re-assembly
@@ -663,7 +750,9 @@ validate proof of work over a header chain, and SHOULD make the source explicit 
 - On chain: the NotaryHash marker, `sealHash`, `proofHash` and hashes of an agreement-specific key and
   signature. No names, e-mail addresses or document hashes. An observer learns that some issuer anchored a
   NotaryHash at a block time, not which issuer.
-- Key derivation per agreement prevents linking a party or the issuer's seal keys across agreements.
+- Key derivation per agreement prevents linking a party or the issuer's seal keys across agreements. The
+  passkey root `R` (§2.3) is the same for every agreement and is therefore known to the issuer only, who
+  already knows the address it belongs to; it MUST NOT appear in a bundle, a certificate or on chain.
 - Funding: anchors paid from one issuer wallet can be clustered by transaction-graph analysis, revealing the
   issuer's anchoring volume and timing.
 - Lookup is by `signedDocument.sha256` only (§7.5) and rate-limited.
@@ -675,6 +764,26 @@ A passkey created during signing is bound to an authenticator, not a person, and
 controlled by a cloud account. The certificate binds the passkey to the e-mail check at signing time; it does
 not strengthen identity beyond that check. The origin and RP ID are fixed in the seal, so a later manifest
 cannot retroactively widen them.
+
+For §3.4, four further points:
+
+- **The page is in the trust path of the derived key.** `R_priv` exists in the memory of a page the issuer
+  serves. An issuer that serves hostile script, or whose page is compromised, can copy it. That does not let
+  anyone forge a signature object of §3.4, which also needs the authenticator, but it would matter for
+  anything `K_party` keys are used for outside this protocol. A native BRC-100 wallet (§3.1) does not have
+  this limit; §3.4 trades it for needing no installation.
+- **Synced passkeys carry the PRF secret with them.** `R` is then the same on every device of the party's
+  cloud account, and as exposed as that account. Measured on 2026-09-21 with Google Password Manager: a
+  passkey created in Chrome 149 on a Linux desktop returned PRF output at creation, and Chrome 153 on
+  Android, signed in to the same account, derived the identical key with no new registration. Apple
+  platforms were not measured; the fallback in §7.8 is what makes that harmless.
+- **Losing the passkey loses the key, and for signatures that costs nothing.** The bundle carries
+  `K_party(i)`'s public key, so past signatures verify for ever; the next agreement is signed with a new
+  passkey or by link. There is nothing to back up and no recovery flow to attack. This stops being true the
+  moment such a key controls funds or state (§11).
+- **One root per passkey, one key per agreement.** Signing with `R` directly, or with any key that repeats
+  across agreements, would give every bundle a person shares the same identifier. Implementations MUST sign
+  with the per-agreement child only.
 
 ### 9.8 What a link-only signature shows
 
@@ -720,7 +829,7 @@ word alone. A verifier that has `I` from another channel SHOULD compare it.
 | Level | Party signature | Identity certificate | Plain-language claim |
 |---|---|---|---|
 | **A0** | `issuer-attestation` | `email-control` (any `method`) | The issuer states that someone with access to the mail delivered to this e-mail address completed the signing steps. |
-| **A1** | `webauthn-es256` or `brc100-secp256k1` | `email-control` | Someone controlling this e-mail address signed with a key only they control. |
+| **A1** | `webauthn-es256`, `webauthn-prf-secp256k1` or `brc100-secp256k1` | `email-control` | Someone controlling this e-mail address signed with a key only they control. |
 | **A2** | as A1 | an identity certificate from a recognised identity provider (e.g. BankID) | A person identified by that provider signed with a key only they control. |
 
 The `method` on an `email-control` certificate does not change the level: a one-time code mailed to the same
@@ -747,6 +856,7 @@ A sender MAY require a minimum level per party (§7.1).
 | Batch-mode anchoring (BRC-220 `kind = 2`) | Volume too low; leaf datum not fixed in BRC-220 |
 | `brc100-secp256k1` as a required suite | No wallet users yet; the suite stays defined so bundles are forward-compatible |
 | Key linkage from the party's identity key (BRC-69/97) | No checkable proof type exists |
+| Transactions co-signed by `K_party(i)` keys (an agreement whose anchor is valid only when every party has signed an input; escrow) | Needs a funded output per party and a position on the page-trust limit of §9.7 before such a key holds value |
 | `authenticated-sender` fields `accountRef`, `organisationNumber`, `organisationVerifiedAt` | Cross-agreement linkage; no register check exists |
 | BRC-52 verifier keyrings instead of raw revelation keys | Only meaningful for wallet parties |
 | Full audit log in the bundle by default | IP addresses and user agents |
@@ -794,6 +904,9 @@ published with the reference implementation:
    header.
 6. A WebAuthn assertion with fixed `authenticatorData` and `clientDataJSON` and the expected V4 result.
 7. An HE-EVENTS-1 chain of three events with a truncated `ua`, a `null` `ip` and a `completed` event.
+8. A fixed `prfOutput` with the resulting `R` key pair, and `K_party(0)` for the fixed `I` and `agreementId`
+   of vector 1, computed from both sides (the party's from `R_priv` and `I`; the issuer's from `I`'s private
+   key and `R`'s public key), plus a complete §3.4 signature object over the statement of vector 2.
 
 ## Appendix C. Changes from 2.0.0-draft.1 (informative)
 
@@ -841,6 +954,22 @@ From the adversarial review of 2026-09-17 (`REVIEW-2.0.0-draft.1.md`):
 - **D4** §9.9: opening a link is not signing. Scanners and prefetchers open links, so the signing act needs a
   state-changing request, affirmative consent and a same-origin check. §5 step 3.1 rewritten accordingly.
 
+## Appendix E. Changes from 2.0.0-draft.3 (informative)
+
+- **E1** New suite `webauthn-prf-secp256k1` (§3.4): one WebAuthn ceremony gives the passkey's ES256
+  assertion and an ECDSA-secp256k1 signature by `K_party(i)`, derived in the browser from the passkey's PRF
+  output. §2.3 defines the passkey root `R`, which stands where a wallet's identity key stands, so
+  `K_party(i)` is the same BRC-42 child as for a wallet party and differs per agreement.
+- **E2** The statement names the party key (`partyKey`, §4.3) for that suite, so the authenticator's
+  signature covers it; V4 and V6 extended accordingly. §6.2 gives the suite its own wording.
+- **E3** `method` gains `email-link+passkey`; `email-control` gains `passkeyRegisteredAt` (§4.4).
+- **E4** §7.8: what an issuer must do when it registers passkeys for an address — registration only after
+  address control, notice to the address, random `user.id`, no secret ever sent to the issuer, the link stays
+  the credential for each agreement, and a fallback chain (§3.4 → §3.2 → §3.3) that never blocks a party.
+- **E5** §9.7 states the limits of a key derived in the issuer's page, what synced passkeys mean for it, why
+  key loss is free for signatures, and records the first device measurements. §9.6: `R` never appears in a
+  bundle, a certificate or on chain. §11 defers transactions co-signed by party keys.
+
 ## References
 
 - BRC-10 Merkle proof standardised format; BRC-11 TSC Proof Format with Heights; BRC-9 SPV
@@ -851,5 +980,6 @@ From the adversarial review of 2026-09-17 (`REVIEW-2.0.0-draft.1.md`):
 - BRC-68 Publishing Trust Anchor Details at an Internet Domain
 - BRC-169 Universal Handle Addressing and Resolution (delegation certificates, future)
 - BRC-220 NotaryHash
-- RFC 2119, RFC 3339, RFC 8785; W3C Web Authentication Level 3
+- RFC 2119, RFC 3339, RFC 8785; W3C Web Authentication Level 3, including its `prf` extension (built on the
+  CTAP2 `hmac-secret` extension)
 - Regulation (EU) No 910/2014 (eIDAS), articles 3, 25, 26, 41
