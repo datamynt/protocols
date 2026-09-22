@@ -2,7 +2,9 @@
 
 Open specifications for blockchain-anchored verification on Bitcoin SV.
 
-These protocols share a common cryptographic foundation: **HKDF-SHA256 key derivation from identity to Bitcoin address**. This means anyone can independently verify proofs and contracts — no server, no database, no trust required. Only math.
+These protocols share a common cryptographic foundation: **salted HKDF-SHA256 key derivation from identity to Bitcoin address**. The algorithm is published and deterministic, so anyone holding the inputs can independently re-derive an address and verify proofs and contracts against the blockchain — no proprietary server logic, no trust in a database. Only math.
+
+> **Important:** key derivation mixes a per-user 256-bit random salt (the user's *presentation key*) with the identity input. Identity alone is **not** enough to derive the key — see [BEVISET §4](./BEVISET.md#4-key-derivation). Without the salt, derived keys would be reproducible by anyone who knows the (low-entropy) identity inputs; the salt is what makes derivation forgery-resistant. The snippet below is illustrative; the normative algorithm (including the salt) lives in the spec.
 
 ## Protocols
 
@@ -54,14 +56,15 @@ Beviset and Helt Enig v1 use the same key derivation algorithm (HKDF-SHA256, RFC
 Helt Enig v2 does **not** use this foundation. It derives keys per agreement with BRC-42/43 from keys the parties or the service hold, and puts identity attributes in BRC-52 certificates instead of in key derivation (see HELTENIG-V2.md §9.1 for why).
 
 ```
-Identity (BankID PID or email+phone)
+Identity (BankID PID or email+phone) + per-user 256-bit salt
     │
-    ├─ domain: "beviset-v1-keygen"    → Beviset address
-    ├─ domain: "heltenig-v1-keygen"   → Helt Enig address
-    └─ domain: "yourapp-v1-keygen"    → Your service's address
+    ├─ domain: "wab-keygen-beviset-v1"           → Beviset address (BankID)
+    ├─ domain: "beviset-v1-keygen-emailphone"    → Beviset address (email+phone)
+    ├─ domain: "wab-keygen-heltenig-v1"          → Helt Enig address (BankID)
+    └─ domain: "heltenig-v1-keygen-emailphone"   → Helt Enig address (email+phone)
 ```
 
-The algorithm is published. Anyone can derive the address from an identity claim and verify it against the blockchain.
+The full list of domain separators is in [BEVISET §4.3](./BEVISET.md#43-domain-separators). The algorithm is published; anyone holding the identity claim **and** the user's salt can re-derive the address and verify it against the blockchain. Services also expose a public `/api/verify-address` endpoint that confirms an address belongs to an identity without revealing the salt.
 
 ## Quick reference
 
@@ -72,9 +75,12 @@ import hashlib, hmac
 PID_PEPPER = "beviset-protocol-pid-pepper-v1-datamynt"
 identity_hash = hmac.new(PID_PEPPER.encode(), pid.encode(), hashlib.sha256).hexdigest()
 
-# Key derivation (HKDF-SHA256)
-def derive_key(identity_input: str, domain: str) -> bytes:
-    prk = hmac.new(domain.encode(), identity_input.encode(), hashlib.sha256).digest()
+# Key derivation (salted HKDF-SHA256). `salt` is a per-user 256-bit random
+# hex string (the presentation key). Without it, derivation is forgeable —
+# see BEVISET §4.5. The IKM is identity_input || salt.
+def derive_key(identity_input: str, domain: str, salt: str) -> bytes:
+    ikm = identity_input + salt
+    prk = hmac.new(domain.encode(), ikm.encode(), hashlib.sha256).digest()
     return hmac.new(prk, b"bitcoin-key-derivation\x01", hashlib.sha256).digest()
 ```
 
