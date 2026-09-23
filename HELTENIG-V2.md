@@ -1,9 +1,10 @@
 # Helt Enig Protocol v2 — Sealed Agreements on Bitcoin SV
 
-**Version:** 2.0.0-draft.5
-**Date:** 2026-09-21
+**Version:** 2.0.0-draft.6
+**Date:** 2026-09-23
 **Status:** Draft for review. draft.1 was reviewed adversarially on 2026-09-17; Appendix C lists what changed
-in draft.2, Appendix D what changed in draft.3, Appendix E what changed in draft.4, Appendix F what changed in draft.5.
+in draft.2, Appendix D what changed in draft.3, Appendix E what changed in draft.4, Appendix F what changed in
+draft.5, Appendix G what changed in draft.6.
 **Supersedes:** [HELTENIG.md](./HELTENIG.md) v0.5 (withdrawn, see §1.3)
 **License (specification):** MIT
 **License (implementations):** Open BSV License
@@ -357,7 +358,17 @@ Implementations and verifiers MUST describe it that way.
 |---|---|
 | `email` | The sender's login e-mail. |
 | `name` | The sender's display name from the login provider or as entered. |
-| `loginMethod` | e.g. `"google"`, `"microsoft"`, `"email-link"`. |
+| `loginMethod` | How the sender authenticated to the issuer: `"email-link"` (a single-use link mailed to the address), `"google"` or `"microsoft"` (an identity provider that vouched for the address), or another provider's name. An issuer whose records do not say how names its login service instead, which records that the sender logged in, not how. Never a passkey: a passkey signs, it does not log in. |
+| `webauthnPublicKey` | The passkey public key (SEC1 hex). Present when the sender signs with a passkey (§3.2, §3.4). |
+| `passkeyRegisteredAt` | When that passkey was registered with the issuer, as recorded by the issuer. Present with `webauthnPublicKey`. |
+
+A sender who signs with a passkey keeps this type. The authenticated login is what established control of the
+address, as the personal link does for an `email-control` party, and the passkey is added to it (§7.8). The type
+has no `method`: the passkey is recorded by `webauthnPublicKey` and `passkeyRegisteredAt` and checked through the
+suite (V4) and V6.5, exactly as for `email-control`. An issuer MUST NOT put the passkey fields on a certificate for
+a sender who did not sign with that passkey; where its records cannot show the passkey signature, it issues the
+certificate without them, which claims the login only (§4.4.1). Verifiers reject passkey fields beside a suite that
+used no passkey (V6.5).
 
 Future certificate types (a BankID identity certificate from an identity broker, a BRC-169 organisation
 delegation certificate) plug in as additional certificates for the same subject key. They MUST be listed in
@@ -585,8 +596,13 @@ failure makes the result **invalid**, and the verifier MUST name the failing ste
   4. Decrypt disclosed fields with the bundle's revelation keys. `agreementId` and `partyIndex`, when
      disclosed, MUST match.
   5. For `webauthn-es256`, the disclosed `webauthnPublicKey` MUST equal `signature.publicKey`; for
-     `webauthn-prf-secp256k1` it MUST equal `signature.webauthn.publicKey`. If that field is not disclosed,
-     report the passkey binding as **undisclosed**.
+     `webauthn-prf-secp256k1` it MUST equal `signature.webauthn.publicKey`. BRC-52 field names are visible even
+     when their values are encrypted: if the certificate names `webauthnPublicKey` but the bundle does not
+     disclose it, report the passkey binding as **undisclosed**; if the certificate does not name it at all,
+     report it as **absent** (the signature still verifies under the key in the signature object, but the
+     certificate does not tie that key to the identity check). For every other suite, a primary certificate
+     that names `webauthnPublicKey` or `passkeyRegisteredAt` MUST be rejected: it claims a passkey the party
+     did not sign with (§4.4).
   6. Primary certificates are never revoked (§4.4); report that policy. For other certificates with a
      non-zero `revocationOutpoint`, check that the outpoint is unspent where the verifier has a spend source;
      otherwise report revocation status as **unchecked**.
@@ -693,7 +709,12 @@ An issuer that lets a party sign with a passkey (§3.2, §3.4) MUST:
 - register a passkey for an address only in a session that has just established control of that address
   under this protocol (a party who has completed the signing steps through a valid personal link, or an
   authenticated sender), and tell the address by e-mail that a passkey was registered, with a way to remove
-  it;
+  it. For an authenticated sender the session is the login, and **both** the login and the sender's own
+  signature made from it MUST lie within the short time of the next item: a login session typically lasts
+  hours, and within it a sender can create and sign an agreement on demand, so a recent signature alone
+  does not show a recent login. The registration is bound to that login: the sender's own party, on the
+  sender's own agreement, for the address the login is authenticated for, and never for another account or
+  address;
 - register only within a short time of that party's signing act (15 minutes is reasonable), never on a
   cancelled agreement, and never replace an active passkey silently: the holder removes the old one first,
   with the link from the notice. Otherwise a personal link that leaks later (a forwarded mail, a shared
@@ -708,9 +729,18 @@ An issuer that lets a party sign with a passkey (§3.2, §3.4) MUST:
   any private key;
 - keep the personal link as what establishes control of the address for **each** agreement. The passkey is
   added to the link, never used instead of it, and the certificate says `method = "email-link+passkey"`. A
-  passkey registered during an earlier compromise of the mailbox is therefore useless without the mailbox;
-- keep passkey trouble away from link signing: a failing passkey table, lookup or script MUST leave the link
-  flow exactly as it is for a party without a passkey;
+  passkey registered during an earlier compromise of the mailbox is therefore useless without the mailbox.
+  For an authenticated sender the login takes the place of the link: the sender signs with a passkey only
+  from an authenticated session for the same address, and the certificate stays `authenticated-sender`,
+  carrying `webauthnPublicKey` and `passkeyRegisteredAt` (§4.4);
+- treat a passkey as registered for the address, not for the route that registered it: the one active
+  passkey of an address MAY sign for that address as a recipient (with the personal link) and as an
+  authenticated sender (with the login). Neither route may use it without its own control factor, and each
+  certificate names only the factor that was used for that signature. A passkey registered from a sender's
+  login may therefore later back a signature made through a personal link, and the other way round;
+  `passkeyRegisteredAt` records when a passkey was registered, not through which route;
+- keep passkey trouble away from link signing and from the sender's own signing: a failing passkey table,
+  lookup or script MUST leave both flows exactly as they are for a party without a passkey;
 - fall back without loss to the party: a device without PRF support signs with `webauthn-es256`, and a
   device without a usable passkey, or a party who dismisses the prompt, signs with `issuer-attestation`
   (§7.1). A passkey prompt MUST NOT stand between a party and the ability to sign;
@@ -790,9 +820,9 @@ validate proof of work over a header chain, and SHOULD make the source explicit 
 ### 9.7 Passkeys
 
 A passkey created during signing is bound to an authenticator, not a person, and synced passkeys are
-controlled by a cloud account. The certificate binds the passkey to the e-mail check at signing time; it does
-not strengthen identity beyond that check. The origin and RP ID are fixed in the seal, so a later manifest
-cannot retroactively widen them.
+controlled by a cloud account. The certificate binds the passkey to the e-mail check, or to the sender's login,
+at signing time; it does not strengthen identity beyond that check. The origin and RP ID are fixed in the seal,
+so a later manifest cannot retroactively widen them.
 
 For §3.4, four further points:
 
@@ -862,13 +892,14 @@ word alone. A verifier that has `I` from another channel SHOULD compare it.
 
 | Level | Party signature | Identity certificate | Plain-language claim |
 |---|---|---|---|
-| **A0** | `issuer-attestation` | `email-control` (any `method`) | The issuer states that someone with access to the mail delivered to this e-mail address completed the signing steps. |
-| **A1** | `webauthn-es256`, `webauthn-prf-secp256k1` or `brc100-secp256k1` | `email-control` | Someone controlling this e-mail address signed with a key only they control. |
+| **A0** | `issuer-attestation` | `email-control` (any `method`) or `authenticated-sender` | The issuer states that someone with access to the mail delivered to this e-mail address, or someone who logged in as this address through `loginMethod`, completed the signing steps. |
+| **A1** | `webauthn-es256`, `webauthn-prf-secp256k1` or `brc100-secp256k1` | `email-control` or `authenticated-sender` | Someone controlling this e-mail address, or logged in as it through `loginMethod`, signed with a key only they control. |
 | **A2** | as A1 | an identity certificate from a recognised identity provider (e.g. BankID) | A person identified by that provider signed with a key only they control. |
 
-The `method` on an `email-control` certificate does not change the level: a one-time code mailed to the same
-address tests the same channel twice, so link-only and link-plus-code are both A0. A factor over a different
-channel, or a key the party alone holds, is what moves a signature up, and A1 asks for the latter.
+The `method` on an `email-control` certificate, and the `loginMethod` on an `authenticated-sender` one, do not
+change the level: a one-time code mailed to the same address tests the same channel twice, so link-only and
+link-plus-code are both A0. A factor over a different channel, or a key the party alone holds, is what moves a
+signature up, and A1 asks for the latter.
 
 Under eIDAS (Regulation (EU) No 910/2014), A0 is a simple electronic signature. A1 is designed to meet three
 of the four requirements of an advanced electronic signature in art. 26: uniquely linked to the signatory
@@ -1021,6 +1052,32 @@ From the adversarial review of the first implementation (2026-09-21):
 - **F4** §4.5 and §9.6: the default disclosure includes the two passkey fields V6 needs, and the passkey's
   P-256 key is named for what it is: one key across agreements, visible in every bundle's signature object,
   and therefore a linking value in reduced-disclosure variants.
+
+## Appendix G. Changes from 2.0.0-draft.5 (informative)
+
+From the first implementation of a sender who signs with a passkey (the party that created the agreement and
+signs from the issuer's authenticated session):
+
+- **G1** §4.4: `authenticated-sender` gains `webauthnPublicKey` and `passkeyRegisteredAt`, with the meaning they
+  have on `email-control`. A sender who signs with a passkey keeps the type: the login established control of the
+  address, and the passkey is added to it. `loginMethod` is defined as how the sender authenticated (a mailed link,
+  an identity provider), with the login service's name only where the issuer's records do not say how; it never
+  names a passkey. The passkey fields appear only on a certificate for a sender who signed with that passkey.
+- **G2** §7.8: for an authenticated sender the login plays the part of the personal link, both at registration
+  (bound to the sender's own party, agreement and login address; the login itself and the sender's own signature
+  both within a short time) and at signing (the certificate stays `authenticated-sender`). One passkey per address
+  serves both routes, each with its own control factor, and `passkeyRegisteredAt` does not say which route
+  registered it. Passkey trouble must not reach the sender's own signing either.
+- **G3** §10: `authenticated-sender` stands next to `email-control` in the A0 and A1 rows, worded by
+  `loginMethod`.
+- **G4** V6.5: a verifier tells a passkey field the certificate names but the bundle withholds (**undisclosed**)
+  from one it does not name at all (**absent**), and rejects passkey fields on a certificate beside a suite that
+  used no passkey.
+
+One verification rule changes, G4. No conforming draft.5 issuer produces the shape it rejects (passkey fields were
+only ever issued beside a passkey suite), and V4 and V6 were already defined per suite and per party whatever the
+certificate type, so conforming draft.5 bundles are conforming draft.6 bundles and a sender's passkey signature
+verifies under the same steps as a recipient's.
 
 ## References
 
