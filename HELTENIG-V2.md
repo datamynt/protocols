@@ -1,10 +1,10 @@
 # Helt Enig Protocol v2 — Sealed Agreements on Bitcoin SV
 
-**Version:** 2.0.0-draft.6
-**Date:** 2026-09-23
+**Version:** 2.0.0-draft.7
+**Date:** 2026-10-06
 **Status:** Draft for review. draft.1 was reviewed adversarially on 2026-09-17; Appendix C lists what changed
 in draft.2, Appendix D what changed in draft.3, Appendix E what changed in draft.4, Appendix F what changed in
-draft.5, Appendix G what changed in draft.6.
+draft.5, Appendix G what changed in draft.6, Appendix H what changed in draft.7.
 **Supersedes:** [HELTENIG.md](./HELTENIG.md) v0.5 (withdrawn, see §1.3)
 **License (specification):** MIT
 **License (implementations):** Open BSV License
@@ -51,7 +51,7 @@ signature. v2 MUST NOT derive any key, hash or identifier that stands in for a p
 1. **Parties are keys, not e-mail addresses.** Identity attributes live in certificates (BRC-52), never in
    key derivation.
 2. **Identity strength is a certificate, not a format.** An e-mail check, a BankID check or a future EUDI
-   wallet check changes the certificate type, not the seal.
+   wallet check is a certificate in the seal, not a change to the seal.
 3. **Say who signed.** A signature made with a party's own key and a statement the issuer makes on a
    party's behalf are different things, and every verifier output MUST keep them apart.
 4. **Block time is the only established time.** Every timestamp in a bundle is chosen by the issuer; the
@@ -84,6 +84,7 @@ signature. v2 MUST NOT derive any key, hash or identifier that stands in for a p
 | **Party** | A person who signs. Indexed `0..n-1` in the agreement. |
 | **Sender** | The party (or non-party) who created and sent the agreement. Authenticated to the issuer. |
 | **Verifier** | Anyone checking an agreement. Needs the signed PDF, the proof bundle and block headers. |
+| **Identity broker** | An OpenID Connect provider (e.g. Idura) through which a person authenticates with an electronic identity (eID) such as BankID. Its ID token reaches the issuer, never the bundle (§4.4, §7.9). |
 
 ### 2.2 Issuer trust anchor
 
@@ -370,9 +371,42 @@ a sender who did not sign with that passkey; where its records cannot show the p
 certificate without them, which claims the login only (§4.4.1). Verifiers reject passkey fields beside a suite that
 used no passkey (V6.5).
 
-Future certificate types (a BankID identity certificate from an identity broker, a BRC-169 organisation
-delegation certificate) plug in as additional certificates for the same subject key. They MUST be listed in
-the seal (§4.6) to be considered.
+**Additional certificates.** A party MAY have further certificates beside the primary one. Each MUST be listed
+in the seal after the primary (§4.6); a certificate that is not listed is not considered. An additional
+certificate follows the common rules above: its `subject` is the primary certificate's `subject`, its
+`certifier` is the primary's, it has the fields `agreementId`, `partyIndex` and `issuedAt`, and it is never
+revoked. The signing statement names the primary only, so an additional certificate does not change what the
+party signed. `eid-oidc` below is the first such type; a BRC-169 organisation delegation certificate is a
+possible later one.
+
+**Type `eid-oidc`** — type id = base64 of `H("heltenig v2 certificate eid-oidc")`
+
+The issuer's record that it received and verified an OpenID Connect ID token from an identity broker for this
+party in this agreement, issued after a person authenticated with an eID.
+
+| Field | Meaning |
+|---|---|
+| `broker` | The identity broker, e.g. `"idura"`. |
+| `brokerIssuer` | The ID token's `iss`, e.g. `"https://heltenig.test.idura.broker"`. |
+| `environment` | `"test"` when the host of `brokerIssuer` has a DNS label equal to `test`, otherwise `"production"`. |
+| `eid` | The eID scheme as the broker names it, e.g. `"nobankid-oidc"`. |
+| `method` | The authentication method as the token states it (`acr`, or the broker's equivalent claim), e.g. `"urn:grn:authn:no:bankid"`. |
+| `authenticatedAt` | When the person authenticated, as the broker states it, in the form of §2.4. |
+| `name` | The person's full name as the eID provider states it. Verified by the provider, unlike the sender-entered `name` of `email-control`. |
+| `birthDate` | The person's date of birth as the provider states it, `YYYY-MM-DD`. Not disclosed by default (§4.5). |
+| `brokerSessionId` | The broker's identifier for the authentication session. It lets the broker's own records be consulted in a dispute. Not disclosed by default (§4.5). |
+
+The issuer MUST verify the token before it issues the certificate (§7.9). The certificate, and every other
+part of the bundle, MUST NOT contain the national identity number, a provider-wide person identifier (for
+BankID through Idura, `uniqueuserid`: the serial number of the person's BankID certificate), the token's `sub`
+or any other broker pseudonym, the bank or certificate issuer, an address, or the ID token itself (§9.6). The
+token is not carried as evidence: its signature covers claims the bundle must not disclose, it expires, and
+the broker rotates the key that signed it.
+
+An `eid-oidc` certificate records one verification, made by the issuer at one moment for one party in one
+agreement. It is not a reusable identity credential, and issuers and verifiers MUST NOT present it as one.
+*Informative:* reusable identities derived from an eID are a different product, governed by the eID scheme's
+own rules.
 
 #### 4.4.1 `method` and what it must not claim
 
@@ -406,6 +440,10 @@ issuer places the raw 32-byte BRC-52 field revelation keys for those fields in t
 ```json
 { "certificateSerial": "<base64>", "fields": { "email": "<base64 key>", "name": "<base64 key>" } }
 ```
+
+For an `eid-oidc` certificate the default disclosure is every field except `birthDate` and `brokerSessionId`.
+Those two stay encrypted in the certificate and are disclosed only in a variant the issuer makes, for example
+in a dispute.
 
 Disclosure in a shared bundle is irrevocable. A party MAY ask the issuer for a bundle variant with fewer
 disclosures; the certificate signature still verifies because BRC-52 signs the encrypted form. Variants come
@@ -445,8 +483,8 @@ from the issuer, not from the party, because for non-wallet parties the issuer h
   page(s). It does not contain the anchor (the anchor is created after the document).
 - `issuer.webauthn` is present when any party used `webauthn-es256` or `webauthn-prf-secp256k1`; it fixes the origin and RP ID a
   verifier checks against, independently of the manifest.
-- `parties[].certificates[0]` is the primary certificate. Additional entries are optional stronger
-  certificates for the same subject.
+- `parties[].certificates[0]` is the primary certificate. Further entries are additional certificates for the
+  same subject (§4.4), such as `eid-oidc`.
 - `auditLog.head` commits to the issuer's full audit trail without publishing it (Appendix A).
 - `previous` MUST be `null` in version 2. It is reserved for amendment chains in a later version.
 
@@ -530,7 +568,9 @@ recomputable trail; it contains IP addresses and user agents and is omitted by d
    1. The party opens the personal link. Delivery of that link to the party's address, and its use within
       its validity window, is what establishes control of the address; an issuer MAY require a further
       factor and then records it in `method` (§4.4.1). The issuer MUST NOT treat the mere opening of a link
-      as a signature: a mail scanner, a link preview or a prefetcher opens links (§9.9).
+      as a signature: a mail scanner, a link preview or a prefetcher opens links (§9.9). When the sender
+      requires it (§7.1), the party then authenticates with an eID through an identity broker, and the
+      issuer keeps the verified fields for an `eid-oidc` certificate (§7.9).
    2. The party chooses how to sign. For a passkey, the party uses one registered for the address earlier
       (§7.8) or registers it now (WebAuthn `create`), and the issuer records the SEC1 public key and, when
       the passkey supports PRF, the public key of `R`; for a wallet, the issuer obtains the party's identity
@@ -541,7 +581,7 @@ recomputable trail; it contains IP addresses and user agents and is omitted by d
    5. The party signs: WebAuthn assertion (§3.2), assertion plus derived key (§3.4), wallet signature
       (§3.1), or by confirming consent, in which case the issuer attests (§3.3).
 4. When all parties have signed, the issuer renders the signed PDF, computes `signedDocument.sha256`,
-   builds and signs the seal, and broadcasts the NotaryHash transaction.
+   issues any additional certificates, builds and signs the seal, and broadcasts the NotaryHash transaction.
 5. The issuer delivers the signed PDF and the proof bundle to every party, then keeps the bundle current as
    the anchor is mined (§7.4).
 
@@ -606,6 +646,14 @@ failure makes the result **invalid**, and the verifier MUST name the failing ste
   6. Primary certificates are never revoked (§4.4); report that policy. For other certificates with a
      non-zero `revocationOutpoint`, check that the outpoint is unspent where the verifier has a spend source;
      otherwise report revocation status as **unchecked**.
+  7. Every further listed certificate MUST pass steps 1, 2 and 4, its certifier MUST be the primary's, and
+     its `subject` MUST equal the primary certificate's `subject`. A type the verifier does not recognise is
+     reported as unrecognised and does not make the bundle invalid.
+  8. For `eid-oidc`: a disclosed `brokerIssuer` MUST be an `https` URL, and a disclosed `environment` MUST be
+     `"test"` or `"production"`. When both are disclosed, `environment` MUST be `"test"` exactly when the
+     host of `brokerIssuer` has a label `test`. The certificate is a **test identity** when either says test,
+     a **production identity** when both are disclosed and neither does, and of **undisclosed environment**
+     otherwise.
 - **V7 Seal signature.** `sealHash = H(JCS(B.seal))`. `B.seal.issuer.sealKey` MUST equal the BRC-42 child of
   `I` for invoice number `2-heltenig agreement seal-<agreementId>`, counterparty `anyone`. `sealSignature`
   MUST verify under `sealKey` over the raw 32-byte `sealHash`.
@@ -634,8 +682,16 @@ For both passkey suites the report states user verification and sync status as w
 - `issuer-attestation`: "the issuer states that this party completed the signing steps"
 
 plus the certificate types that establish identity (e.g. "controls the e-mail address a***@example.com",
-"identity confirmed with BankID"), the anchor state (§4.8) with block height and block time, and the issuer
-key status from V5.
+"identity confirmed with BankID through Idura"), the anchor state (§4.8) with block height and block time, and
+the issuer key status from V5.
+
+For an `eid-oidc` certificate the verifier reports the identity as confirmed with the certificate's eID through
+its broker (e.g. "identity confirmed with BankID through Idura"), with the disclosed `name` and
+`authenticatedAt` as claimed by the issuer. It MUST report a test identity (V6.8) as a test that says nothing
+about a real person, and an identity of undisclosed environment as such; neither raises the assurance level
+(§10). Where the `name` on the party's primary certificate differs from the `eid-oidc` name,
+the verifier shows both and rejects neither: the first was entered by the sender, the second comes from the
+eID provider.
 
 Times: the verifier MUST present `signedAt`, `sealedAt`, `issuedAt`, `createdAt` and every certificate time
 as **claimed by the issuer**, and the anchor block time as the only established time. Several seals MAY
@@ -652,6 +708,11 @@ A verifier MUST NOT describe a result as "legally binding" or "qualified".
 A party MUST always be able to sign by `issuer-attestation`. Stronger suites are offered, never required,
 unless the sender requires a minimum assurance level (§10); the issuer MUST record that requirement in the
 audit log.
+
+A sender MAY require an `eid-oidc` verification for a party. The issuer MUST record the requirement in the
+audit log, and a party so required MUST NOT be able to complete signing without an `eid-oidc` verification
+made for that party in that agreement no more than 30 minutes before the signature. The requirement adds a
+step before signing; it takes no suite away.
 
 ### 7.2 Originals
 
@@ -686,7 +747,9 @@ bundle discloses exactly what the certificate page prints, so a holder of the PD
 
 The certificate page inside the signed PDF SHOULD show `agreementId`, `originalSha256`, each party's name,
 e-mail, suite in plain language, that parties viewed the issuer's rendering, and the verification address.
-It cannot show `sealHash` or the anchor, because both are computed after the PDF.
+For a party with an `eid-oidc` certificate it SHOULD show the fields that certificate discloses by default
+(§4.5), and mark a test identity as one. It cannot show `sealHash` or the anchor, because both are computed
+after the PDF.
 
 ### 7.7 The personal link as a credential
 
@@ -746,6 +809,22 @@ An issuer that lets a party sign with a passkey (§3.2, §3.4) MUST:
   (§7.1). A passkey prompt MUST NOT stand between a party and the ability to sign;
 - explain the prompt before it appears. Browsers word passkey dialogs as signing **in**, and a first-time
   party who is asked to "sign in" while signing an agreement has reason to stop.
+
+### 7.9 Identity through an identity broker
+
+An issuer that issues `eid-oidc` certificates (§4.4) MUST:
+
+- request nothing it may not keep: never the national identity number (for Idura, never the scope `ssn`);
+- use the authorization code flow with PKCE, `state` and `nonce`, and require a fresh authentication (OpenID
+  Connect `prompt=login`), so that an earlier session at the broker is never reused;
+- verify the ID token before it uses any claim in it: the signature under a key the broker publishes, `iss`,
+  `aud`, the validity times, the `nonce` it sent, and a method equal to the one it requested or a more
+  specific value of it;
+- bind the verification to one party in one agreement, through that party's current personal link (§7.7) or
+  a sender's authenticated session, and refuse a response that comes back for another party, agreement or
+  link;
+- keep only the fields of §4.4, never the token, and log no claim from it;
+- set `environment` from the host of `brokerIssuer`, and never present a test identity as a real person.
 
 ---
 
@@ -814,6 +893,12 @@ validate proof of work over a header chain, and SHOULD make the source explicit 
   so when they offer reduced disclosure. `K_party(i)` does not have this property.
 - Funding: anchors paid from one issuer wallet can be clustered by transaction-graph analysis, revealing the
   issuer's anchoring volume and timing.
+- An `eid-oidc` certificate names the person and, encrypted unless an issuer-made variant discloses it, their
+  birth date. What would link the person beyond this agreement stays out of the bundle (§4.4): the national
+  identity number; a provider-wide identifier such as BankID's `uniqueuserid`, which is the same at every
+  relying party and so links the person across every service they use; the broker's `sub`, which is stable
+  per broker tenant and so links the person across agreements and across every service on that tenant; and
+  the bank that issued the eID. The ID token stays out because its signature covers all of these.
 - Lookup is by `signedDocument.sha256` only (§7.5) and rate-limited.
 - Disclosure in a shared bundle is irrevocable; the optional audit log contains IP addresses and user agents.
 
@@ -893,19 +978,22 @@ word alone. A verifier that has `I` from another channel SHOULD compare it.
 | Level | Party signature | Identity certificate | Plain-language claim |
 |---|---|---|---|
 | **A0** | `issuer-attestation` | `email-control` (any `method`) or `authenticated-sender` | The issuer states that someone with access to the mail delivered to this e-mail address, or someone who logged in as this address through `loginMethod`, completed the signing steps. |
+| **A0+ID** | `issuer-attestation` | as A0, plus a production `eid-oidc` | The issuer states that a person identified through the eID completed the signing steps. |
 | **A1** | `webauthn-es256`, `webauthn-prf-secp256k1` or `brc100-secp256k1` | `email-control` or `authenticated-sender` | Someone controlling this e-mail address, or logged in as it through `loginMethod`, signed with a key only they control. |
-| **A2** | as A1 | an identity certificate from a recognised identity provider (e.g. BankID) | A person identified by that provider signed with a key only they control. |
+| **A2** | as A1 | as A1, plus a production `eid-oidc` | A person identified through the eID signed with a key only they control. |
 
 The `method` on an `email-control` certificate, and the `loginMethod` on an `authenticated-sender` one, do not
 change the level: a one-time code mailed to the same address tests the same channel twice, so link-only and
 link-plus-code are both A0. A factor over a different channel, or a key the party alone holds, is what moves a
-signature up, and A1 asks for the latter.
+signature up, and A1 asks for the latter. An `eid-oidc` certificate moves the level only when it is a
+production identity (V6.8): a test identity, or one of undisclosed environment, never changes it.
 
 Under eIDAS (Regulation (EU) No 910/2014), A0 is a simple electronic signature. A1 is designed to meet three
 of the four requirements of an advanced electronic signature in art. 26: uniquely linked to the signatory
 (a), created with data under the signatory's sole control (c), and linked to the data so that changes are
 detectable (d). Requirement (b), capable of identifying the signatory, rests at A1 on e-mail control and a
-name entered by the sender, which is weak; A2 meets (b) through the identity provider. Whether a court
+name entered by the sender, which is weak; A2 meets (b) through the identity provider. A0+ID meets (b) the same
+way and remains a simple electronic signature, because the issuer, not the party, signs. Whether a court
 accepts any of this is outside this specification. No level is a qualified signature. The anchor is a
 non-qualified electronic time stamp (art. 41(1)); the presumption of art. 41(2) does not apply.
 
@@ -972,6 +1060,9 @@ published with the reference implementation:
 8. A fixed `prfOutput` with the resulting `R` key pair, and `K_party(0)` for the fixed `I` and `agreementId`
    of vector 1, computed from both sides (the party's from `R_priv` and `I`; the issuer's from `I`'s private
    key and `R`'s public key), plus a complete §3.4 signature object over the statement of vector 2.
+9. An `eid-oidc` certificate with `environment` = `"test"`: plaintext fields, the default disclosure without
+   `birthDate` and `brokerSessionId`, and a second certificate whose `environment` contradicts its
+   `brokerIssuer`, which V6 rejects.
 
 ## Appendix C. Changes from 2.0.0-draft.1 (informative)
 
@@ -1079,6 +1170,27 @@ only ever issued beside a passkey suite), and V4 and V6 were already defined per
 certificate type, so conforming draft.5 bundles are conforming draft.6 bundles and a sender's passkey signature
 verifies under the same steps as a recipient's.
 
+## Appendix H. Changes from 2.0.0-draft.6 (informative)
+
+From two logins with a test BankID through Idura (2026-10-06) and the first implementation of a party who must
+confirm their identity with an eID before signing:
+
+- **H1** §4.4: additional certificates are defined (the primary's subject and certifier, listed in the seal,
+  never revoked, not named in the statement), and the first type, `eid-oidc`: the issuer's record of a verified
+  ID token from an identity broker. §4.5: `birthDate` and `brokerSessionId` are not disclosed by default.
+- **H2** §4.4, §9.6: the national identity number, provider-wide person identifiers such as `uniqueuserid`,
+  broker pseudonyms such as `sub`, the bank and the ID token itself never enter a bundle, and why.
+- **H3** V6.7, V6.8, §6.2: further certificates are checked like the primary; `eid-oidc` is recognised; a test
+  identity is reported as one; an `environment` that contradicts `brokerIssuer` is rejected; the sender-entered
+  name is shown beside the provider's, and neither is rejected for differing.
+- **H4** §7.1, §7.9: a sender may require an `eid-oidc` verification for a party, made no more than 30 minutes
+  before the signature; what an issuer must do when it talks to a broker. §2.1 names the identity broker.
+- **H5** §10: A2 is a production `eid-oidc` certificate on top of A1, and A0+ID is the same certificate beside
+  the issuer's attestation. Test identities never change the level.
+
+A bundle without additional certificates verifies exactly as before, so conforming draft.6 bundles are
+conforming draft.7 bundles.
+
 ## References
 
 - BRC-10 Merkle proof standardised format; BRC-11 TSC Proof Format with Heights; BRC-9 SPV
@@ -1089,6 +1201,6 @@ verifies under the same steps as a recipient's.
 - BRC-68 Publishing Trust Anchor Details at an Internet Domain
 - BRC-169 Universal Handle Addressing and Resolution (delegation certificates, future)
 - BRC-220 NotaryHash
-- RFC 2119, RFC 3339, RFC 8785; W3C Web Authentication Level 3, including its `prf` extension (built on the
-  CTAP2 `hmac-secret` extension)
+- RFC 2119, RFC 3339, RFC 7636 (PKCE), RFC 8785; OpenID Connect Core 1.0; W3C Web Authentication Level 3,
+  including its `prf` extension (built on the CTAP2 `hmac-secret` extension)
 - Regulation (EU) No 910/2014 (eIDAS), articles 3, 25, 26, 41
